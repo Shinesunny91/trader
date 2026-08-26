@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual envs
+.venv*/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Data - large files (kept locally, regenerated on cloud)
+data/*.sqlite3
+data/*.parquet
+data/*.pkl
+data/*.log
+data/*.log.*
+data/*.gz
+data/*.csv
+data/nse_flows/
+data/notifications_paused
+
+# Keep essential small config/model JSON files
+!data/scan_config.json
+!data/signal_model.json
+
+# Android build artifacts
+*.apk
+*.idsig
+android-app/
+
+# Tunnels
+bin/
+/tmp/cloudflared
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak-*
+data/*.jsonl
+data/daemon_state.json
+data/scan_state.json
+data/today_*.json
+data/swing_tickets.json
+data/meta_model_commodity.json
