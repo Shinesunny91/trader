@@ -33,6 +33,10 @@ data/notifications_paused
 !data/scan_config.json
 !data/signal_model.json
 
+# Keep symbol cache CSVs (NSE blocks non-Indian IPs on cloud)
+!data/nifty50_symbols.csv
+!data/nifty100_symbols.csv
+
 # Android build artifacts
 *.apk
 *.idsig

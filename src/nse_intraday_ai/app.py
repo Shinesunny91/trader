@@ -753,32 +753,20 @@ def _render_execution_tickets(recommendations: list[ScanResult], risk_config: Ri
             model_rank=result.model_rank or (index + 1),
         )
         st.code(ticket.order_ticket(), language="text")
-        import urllib.parse
         from nse_intraday_ai.alerts import (
-            send_order_ticket_telegram, telegram_configured,
+            send_all_channels, NTFY_TOPIC,
         )
-        wa_text = f"🚨 *NSE TRADE TICKET*\n{ticket.order_ticket()}\n\n📱 Live Terminal: https://were-grid-residents-others.trycloudflare.com"
+        # Auto-push to phone via ntfy.sh (zero config, works instantly)
+        _push_key = f"_ntfy_auto_{result.symbol}_{index}"
+        if _push_key not in st.session_state:
+            results = send_all_channels(ticket.order_ticket())
+            st.session_state[_push_key] = results
+            if results.get("ntfy"):
+                st.success(f"📱 Alert pushed to your phone! (ntfy topic: `{NTFY_TOPIC}`)")
+        import urllib.parse
+        wa_text = f"🚨 NSE TRADE TICKET\n{ticket.order_ticket()}"
         wa_url = f"https://api.whatsapp.com/send?phone=918123157952&text={urllib.parse.quote(wa_text)}"
-        col_wa, col_tg = st.columns(2)
-        with col_wa:
-            st.markdown(f'<a href="{wa_url}" target="_blank" style="display:inline-block;padding:8px 16px;background-color:#25D366;color:white;text-decoration:none;border-radius:6px;font-weight:bold;margin-bottom:12px;">📲 WhatsApp</a>', unsafe_allow_html=True)
-        with col_tg:
-            if telegram_configured():
-                tg_key = f"tg_send_{result.symbol}_{index}"
-                if st.button(f"📨 Send to Telegram", key=tg_key):
-                    ok = send_order_ticket_telegram(ticket.order_ticket())
-                    if ok:
-                        st.success("✅ Sent to Telegram!")
-                    else:
-                        st.error("❌ Telegram send failed")
-            else:
-                st.caption("⚙️ Telegram not configured — see Settings")
-        # Auto-push to Telegram if configured
-        if telegram_configured():
-            _tg_sent_key = f"_tg_auto_{result.symbol}_{index}"
-            if _tg_sent_key not in st.session_state:
-                send_order_ticket_telegram(ticket.order_ticket())
-                st.session_state[_tg_sent_key] = True
+        st.markdown(f'<a href="{wa_url}" target="_blank" style="display:inline-block;padding:6px 12px;background-color:#25D366;color:white;text-decoration:none;border-radius:6px;font-size:0.85em;margin-bottom:8px;">📲 Share via WhatsApp</a>', unsafe_allow_html=True)
 
 
 def _near_misses_frame(
@@ -1650,12 +1638,33 @@ def main() -> None:
                 _pause_flag.touch()
                 st.toast("Desktop notifications PAUSED")
 
-        # ── Telegram Bot Setup ────────────────────────────────────────────────
+        # ── Mobile Push Alerts ─────────────────────────────────────────────────
         from nse_intraday_ai.alerts import (
             telegram_configured, save_telegram_config,
             send_telegram, telegram_setup_interactive, _load_telegram_config,
+            send_ntfy, NTFY_TOPIC,
         )
-        with st.expander("📨 Telegram Alerts Setup", expanded=not telegram_configured()):
+        with st.expander("📱 Phone Alerts (ntfy.sh)", expanded=True):
+            st.markdown(
+                f"**Instant push notifications — zero signup!**\n\n"
+                f"1. Install **ntfy** app on your phone:\n"
+                f"   - [Android (Play Store)](https://play.google.com/store/apps/details?id=io.heckel.ntfy)\n"
+                f"   - [iOS (App Store)](https://apps.apple.com/app/ntfy/id1625396347)\n"
+                f"2. Open the app → tap **+** → subscribe to:\n"
+            )
+            st.code(NTFY_TOPIC, language=None)
+            st.markdown("3. **Done!** Every trade alert is auto-pushed to your phone. ✅")
+            if st.button("🧪 Send Test Push", key="ntfy_test_btn"):
+                ok = send_ntfy(
+                    "🧪 Test from NSE Quant Terminal\n\nPush notifications working! ✅",
+                    title="🧪 Test Alert",
+                )
+                if ok:
+                    st.success("✅ Test sent! Check the ntfy app on your phone.")
+                else:
+                    st.error("❌ Failed to send (check internet)")
+
+        with st.expander("📨 Telegram Alerts (optional)", expanded=False):
             if telegram_configured():
                 st.success("✅ Telegram connected!")
                 cfg = _load_telegram_config()
@@ -1671,12 +1680,10 @@ def main() -> None:
                         st.error("Failed to send. Check bot token.")
             else:
                 st.markdown(
-                    "**Free setup (2 minutes):**\n"
                     "1. Open Telegram → search **@BotFather**\n"
-                    "2. Send `/newbot` → follow prompts\n"
-                    "3. Copy the **Bot Token** and paste below\n"
-                    "4. Open your new bot in Telegram, send `/start`\n"
-                    "5. Click **Connect** below"
+                    "2. Send `/newbot` → copy the **Bot Token**\n"
+                    "3. Open your bot, send `/start`\n"
+                    "4. Paste token below → click Connect"
                 )
                 tg_token = st.text_input(
                     "Bot Token", type="password", key="tg_token_input",
@@ -1684,7 +1691,7 @@ def main() -> None:
                 )
                 if st.button("🔗 Connect Telegram", key="tg_connect_btn"):
                     if not tg_token:
-                        st.error("Please paste your bot token first.")
+                        st.error("Paste your bot token first.")
                     else:
                         with st.spinner("Detecting chat_id..."):
                             chat_id = telegram_setup_interactive(tg_token)
@@ -1694,17 +1701,15 @@ def main() -> None:
                             st.rerun()
                         else:
                             st.error(
-                                "No messages found. Make sure you:\n"
-                                "1. Opened your bot in Telegram\n"
-                                "2. Sent /start\n"
-                                "Then click Connect again."
+                                "No messages found. Send /start to your bot first, "
+                                "then click Connect again."
                             )
         st.divider()
 
         st.header("Market")
         workspace_mode = st.radio(
             "Mode",
-            ["NIFTY 500 scanner", "NIFTY 100 scanner", "NIFTY 50 scanner", "Commodity scanner",
+            ["NIFTY 50 scanner", "NIFTY 100 scanner", "NIFTY 500 scanner", "Commodity scanner",
              "Recommendation workbench", "Candidate paper track", "Intra-week book", "Backtest", "Single symbol"],
             index=0,
         )
