@@ -81,6 +81,14 @@ def _notify(title: str, body: str, urgency: str = "normal") -> None:
              "--expire-time=30000"],
             env=env, timeout=5, check=False,
         )
+        if urgency in ("critical", "normal"):
+            try:
+                subprocess.run(
+                    ["canberra-gtk-play", "-i", "message-new-instant"],
+                    env=env, timeout=2, check=False,
+                )
+            except Exception:
+                pass
     except Exception:
         pass
 

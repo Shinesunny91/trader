@@ -140,12 +140,26 @@ def _stitched_frames(
     from cache so strategies see full history either way."""
     fetched: dict = {}
     if do_fetch:
+        cache = getattr(provider, "_cache", None)
+        # If cache lacks sufficient history (<35 bars) for any symbol, fetch full period (e.g. 5d)
+        needs_bulk = True if cache is None else False
+        if cache is not None:
+            for s in symbols[:15]:
+                try:
+                    c_df = cache.load_period(s, interval, period)
+                    if c_df.empty or len(c_df) < 35:
+                        needs_bulk = True
+                        break
+                except Exception:
+                    needs_bulk = True
+                    break
+        fetch_period = period if needs_bulk else "1d"
         try:
             fetched = provider.batch_history(
-                symbols, period="1d", interval=interval, retry_missing=False
+                symbols, period=fetch_period, interval=interval, retry_missing=False
             )
         except TypeError:
-            fetched = provider.batch_history(symbols, period="1d", interval=interval)
+            fetched = provider.batch_history(symbols, period=fetch_period, interval=interval)
     cache = getattr(provider, "_cache", None)
     frames: dict[str, pd.DataFrame] = {}
     for symbol in symbols:
@@ -155,12 +169,13 @@ def _stitched_frames(
                 frame = cache.load_period(symbol, interval, period)
             except Exception:
                 frame = pd.DataFrame()
-        if frame.empty:
+        if frame.empty or len(frame) < 35:
             result = fetched.get(symbol)
             if result is not None and not result.frame.empty:
-                frame = result.frame
-                if frame.index.tz is None:
-                    frame = frame.tz_localize(IST)
+                if len(result.frame) >= len(frame):
+                    frame = result.frame
+                    if frame.index.tz is None:
+                        frame = frame.tz_localize(IST)
         if not frame.empty:
             frames[symbol] = frame
     return frames

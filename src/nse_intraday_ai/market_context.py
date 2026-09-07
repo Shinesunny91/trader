@@ -54,12 +54,6 @@ SYMBOL_TO_SECTOR: dict[str, str] = {
 # scanned peers (which is kept as a fallback).
 SECTOR_TO_INDEX: dict[str, str] = {
     "Banking":       "^NSEBANK",
-    "IT":            "^CNXIT",
-    "Auto":          "^CNXAUTO",
-    "Pharma":        "^CNXPHARMA",
-    "FMCG":          "^CNXFMCG",
-    "Metals":        "^CNXMETAL",
-    "Energy":        "^CNXENERGY",
     "Finance":       "^NSEBANK",
 }
 
@@ -375,9 +369,7 @@ _GLOBAL_TICKERS = [
     "ES=F", "DX-Y.NYB", "USDINR=X", "^N225", "^HSI", "^GDAXI", "^TNX", "^VIX", "CL=F",
 ]
 _NSE_TICKERS = [
-    "^NSEI", "^INDIAVIX",
-    # NSE sector indices
-    "^NSEBANK", "^CNXIT", "^CNXAUTO", "^CNXPHARMA", "^CNXFMCG", "^CNXMETAL", "^CNXENERGY",
+    "^NSEI", "^INDIAVIX", "^NSEBANK",
 ]
 _CONTEXT_TICKERS = [*_NSE_TICKERS, *_GLOBAL_TICKERS]
 
