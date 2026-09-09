@@ -93,6 +93,18 @@ def notify(title: str, body: str, urgency: str = "normal") -> None:
     except Exception as exc:
         log.warning("notify-send failed: %s", exc)
 
+    # Automatic mobile push notification via ntfy.sh
+    try:
+        from nse_intraday_ai.alerts import send_ntfy
+        send_ntfy(
+            title=title,
+            message=body,
+            priority="high" if urgency == "critical" else "default",
+            tags="rotating_light,chart_with_upwards_trend" if urgency == "critical" else "bell",
+        )
+    except Exception as exc:
+        log.warning("ntfy push failed: %s", exc)
+
 
 # ── Signal dedup state ────────────────────────────────────────────────────
 
