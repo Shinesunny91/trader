@@ -1621,12 +1621,38 @@ def _render_swing() -> None:
     )
 
 
+def _render_market_phase_banner(now: pd.Timestamp) -> None:
+    """Institutional timing guide: alerts user to high-edge windows vs midday chop."""
+    m = now.hour * 60 + now.minute
+    if m < 555:
+        st.info("🕒 **Pre-Market / Overnight Session**: NSE opens at 09:15 IST. Next trade window: **09:15 – 10:00 IST (Morning Opening Drive)**.")
+    elif m <= 600:
+        st.success("🟢 **Morning Opening Drive (09:15 – 10:00 IST)**: High-Conviction Momentum Window. Focus on ORB and Gap Expansions.")
+    elif m < 795:
+        remaining_m = 795 - m
+        hrs, mins = divmod(remaining_m, 60)
+        time_str = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
+        st.warning(
+            f"🟡 **Midday Chop & Consolidation (10:00 – 13:15 IST)**: Historically negative edge zone. "
+            f"**DO NOT TAKE NEW TRADES** — protect morning gains. Next high-edge window: **13:15 IST** (in {time_str}, European open)."
+        )
+    elif m <= 870:
+        st.success("🟢 **Afternoon Trend Resumption (13:15 – 14:30 IST)**: European Open & Directional Expansion. Optimal window for second trade.")
+    elif m <= 915:
+        st.warning("🟠 **Late Afternoon Positioning (14:30 – 15:15 IST)**: Tighten trailing stops. No new long-duration entries.")
+    elif m <= 930:
+        st.error("🔴 **Intraday Square-Off Window (15:15 – 15:30 IST)**: Close all intraday MIS positions before broker auto-square-off.")
+    else:
+        st.info("🌙 **Market Closed**: NSE regular trading hours end at 15:30 IST. Review session logs & paper book.")
+
+
 def main() -> None:
     st.title("NSE & Commodity Intraday Signal Lab")
     st.caption(
         "Research and paper-trading tool. It is not a profit guarantee or personal financial advice. "
         "Use broker/licensed feeds before any real-money workflow."
     )
+    _render_market_phase_banner(pd.Timestamp.now(tz=IST))
 
     with st.sidebar:
         # ── Daemon notification toggle ────────────────────────────────────────
