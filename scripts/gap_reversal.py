@@ -152,9 +152,9 @@ def cmd_final(args) -> None:
              enabled=args.push, priority="default")
         return
     if result is None:
-        push(f"✅ Gap-reversal {session:%d %b}: 08:45 list is final",
-             "The open model is not promoted (or its guard is off): trade the 08:45 list.",
-             enabled=args.push, priority="default")
+        # No open model promoted, or its guard is off: the 08:45 list already is
+        # the final one, and a second message saying so would only be noise.
+        print("the 08:45 list stands (no promoted open model, or its guard is off)")
         return
     picks, info = result
     preliminary = [p["symbol"] for p in payload.get("picks", []) if not p.get("reserve")]
