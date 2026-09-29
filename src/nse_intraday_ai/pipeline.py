@@ -224,7 +224,10 @@ def open_rerank(session: date, config: G.GapReversalConfig = G.GapReversalConfig
     cached = pickle.loads(LIVE_INPUTS.read_bytes()) if LIVE_INPUTS.exists() else None
     inputs = (cached["inputs"] if cached and cached["session"] == session
               else FT.load_inputs(session - timedelta(days=420), session - timedelta(days=1)))
-    rows = FT.build(inputs, live_session=session, with_open=True, opens=nse_preopen.opens(final))
+    snapshot = final.assign(session=session)
+    prior = inputs.preopen if inputs.preopen is not None else pd.DataFrame()
+    rows = FT.build(inputs, live_session=session, with_open=True, opens=nse_preopen.opens(final),
+                    preopen=pd.concat([prior, snapshot], ignore_index=True))
     rows = rows.xs(session, level="session", drop_level=False)
     rows = rows[(rows["was_be_20"].fillna(0) == 0) & rows["gap0"].notna()]
     score = pd.Series(open_model.score(rows), index=rows.index)
@@ -247,7 +250,11 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
                                                      the extra cost of a 09:15 entry
     """
     morning_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + FT.OPEN_FEATURES)
-    open_cfg = R.RankerConfig()
+    # Auction-microstructure features join the open model only once the pre-open
+    # archive is long enough to learn from; until then they are excluded.
+    archived = nse_preopen.archived_sessions()
+    open_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + (
+        () if archived >= FT.MIN_PREOPEN_SESSIONS else FT.PREOPEN_FEATURES))
     panel = FT.history(with_open=True)
     last = max(panel.index.get_level_values("session"))
     start = (pd.Timestamp(last) - pd.DateOffset(years=int(eval_years))).strftime("%Y-%m-%d")
@@ -261,6 +268,7 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
                        cost_bps=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
     evidence = {
         "window": [start, str(last)],
+        "preopen_archive_sessions": archived,
         "rule": R.summarize(rule_book, start),
         "ranker": R.summarize(model_book, start),
         "ranker_open": R.summarize(open_book, start),

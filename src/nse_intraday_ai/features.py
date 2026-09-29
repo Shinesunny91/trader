@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from nse_intraday_ai import nse_bhav, nse_extra, nse_fo
+from nse_intraday_ai import nse_bhav, nse_extra, nse_fo, nse_preopen
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "candles.sqlite3"
@@ -58,6 +58,7 @@ class Inputs:
     participant: pd.DataFrame                       # date-indexed positioning ratios
     sectors: dict[str, str] = field(default_factory=dict)
     extra: pd.DataFrame | None = None               # MWPL crowding, bans, short sales
+    preopen: pd.DataFrame | None = None             # archived pre-open auction snapshots
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
@@ -115,6 +116,7 @@ def load_inputs(start: date, end: date) -> Inputs:
         participant=load_participant(),
         sectors=sectors,
         extra=nse_extra.load(start, end),
+        preopen=nse_preopen.load_archive(start, end),
     )
 
 
@@ -143,12 +145,17 @@ def _wide(frame: pd.DataFrame, col: str, sessions: pd.Index, symbols: pd.Index) 
 # price (09:08 IST).  The 08:45 model must never see them; the 09:09 model does.
 OPEN_FEATURES = ("gap0", "gap0_atr", "gap0_xrank", "gap0_sec", "gap0_vs_sec", "gap0_minus_mkt",
                  "gap01", "gap0_x_relvol", "gap0_x_lowdeliv", "x_gap0_med", "x_gap0_breadth",
-                 "x_gap0_disp")
+                 "x_gap0_disp") + ("po_imbalance", "po_ato_imbalance", "po_auction_rel")
+# Auction microstructure exists only from the day the pre-open archive started;
+# the weekly job keeps these out of the model until the archive is long enough.
+PREOPEN_FEATURES = ("po_imbalance", "po_ato_imbalance", "po_auction_rel")
+MIN_PREOPEN_SESSIONS = 120
 
 
 def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = None,
           min_price: float = 50.0, stop_atr: float = STOP_ATR, prefilter: int = 600,
-          with_open: bool = False, opens: pd.DataFrame | None = None) -> pd.DataFrame:
+          with_open: bool = False, opens: pd.DataFrame | None = None,
+          preopen: pd.DataFrame | None = None) -> pd.DataFrame:
     """Feature rows (session, symbol) for the point-in-time liquid universe.
 
     Research (live_session=None): every session, with targets.  Live: only
@@ -304,6 +311,17 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
         f["gap01"] = g0 + f["gap1"]                # two nights in a row
         f["gap0_x_relvol"] = g0 * np.log1p(f["relvol1"].clip(0, 20))
         f["gap0_x_lowdeliv"] = g0 * (1 - f["deliv1"] / 100)
+        # Auction microstructure: unmatched demand, at-the-open market orders,
+        # and auction turnover against a normal day's (NaN before the archive).
+        po = preopen if preopen is not None else inputs.preopen
+        if po is not None and not po.empty:
+            po = po.drop_duplicates(["session", "symbol"])
+            PW = lambda col: _wide(po, col, sessions, symbols)  # noqa: E731
+            buy, sell = PW("buy_qty"), PW("sell_qty")
+            ab, asl = PW("ato_buy"), PW("ato_sell")
+            f["po_imbalance"] = (buy - sell) / (buy + sell).replace(0, np.nan)
+            f["po_ato_imbalance"] = (ab - asl) / (ab + asl).replace(0, np.nan)
+            f["po_auction_rel"] = np.log((PW("final_qty") * PW("iep")) / val20.replace(0, np.nan))
 
     mkt = pd.DataFrame(index=sessions)
     if with_open:

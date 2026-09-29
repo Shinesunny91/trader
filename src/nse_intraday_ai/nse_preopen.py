@@ -109,3 +109,20 @@ def wait_and_fetch(day: date, *, deadline: str = "09:13", poll_seconds: int = 10
                 raise
             log(f"  pre-open not final yet ({exc}); retrying")
             time.sleep(poll_seconds)
+
+
+def load_archive(start: date, end: date) -> pd.DataFrame:
+    """Archived auction snapshots in [start, end] as (session, symbol, ...) rows."""
+    parts = []
+    for year in range(start.year, end.year + 1):
+        for p in sorted((ARCHIVE_DIR / f"{year}").glob("preopen_*.parquet")):
+            d = date(int(p.stem[8:12]), int(p.stem[12:14]), int(p.stem[14:16]))
+            if start <= d <= end:
+                f = pd.read_parquet(p)
+                f.insert(0, "session", d)
+                parts.append(f)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def archived_sessions() -> int:
+    return len(list(ARCHIVE_DIR.glob("*/preopen_*.parquet")))

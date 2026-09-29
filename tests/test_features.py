@@ -197,3 +197,24 @@ def test_new_anomaly_features_are_causal():
     a = full.xs(target, level="session").sort_index()[cols]
     b = live.xs(target, level="session").sort_index()[cols]
     np.testing.assert_allclose(a.to_numpy(float), b.to_numpy(float), rtol=1e-5, atol=1e-6, equal_nan=True)
+
+
+def test_auction_features_come_from_the_snapshot_and_are_missing_without_one():
+    bhav = _bhav()
+    sessions = sorted(bhav["session"].unique())
+    target = sessions[70]
+    today = bhav[bhav["session"] == target].set_index("symbol")
+    snap = pd.DataFrame({"session": target, "symbol": today.index, "iep": today["open"].to_numpy(),
+                         "prev_close": today["prev_close"].to_numpy(), "final_qty": 1000.0,
+                         "buy_qty": 600.0, "sell_qty": 200.0, "ato_buy": 50.0, "ato_sell": 150.0})
+    live = FT.build(_inputs(bhav[bhav["session"] < target]), universe=10, min_price=1.0,
+                    live_session=target, with_open=True,
+                    opens=today[["open", "prev_close"]], preopen=snap)
+    row = live.xs(target, level="session")
+    assert np.allclose(row["po_imbalance"], 0.5) and np.allclose(row["po_ato_imbalance"], -0.5)
+    assert row["po_auction_rel"].notna().all()
+    full = FT.build(_inputs(bhav), universe=10, min_price=1.0, with_open=True, preopen=snap)
+    a = full.xs(target, level="session").sort_index()
+    np.testing.assert_allclose(a["po_imbalance"], row.sort_index()["po_imbalance"])
+    other = full.xs(sessions[60], level="session")
+    assert other["po_imbalance"].isna().all()                  # no snapshot that day

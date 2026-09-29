@@ -14,6 +14,165 @@ git checkout fa1b3e2 -- scripts/<name>.py # restore one
 
 Newest first.
 
+## 2026-09-29 (round 2) — point-in-time data, a learned ranker, and a self-correcting loop
+
+**Question.** Can the gap-reversal book be improved by ranking on more
+information than yesterday's gap — and does any improvement survive the
+tests that sank every earlier model in this repo?
+
+### New information, all point-in-time, all from public archives
+
+| source | what it adds | first date |
+|---|---|---|
+| NSE equity bhavcopy (+ MTO) | **every** EQ/BE stock each day — delisted and demoted ones included; NSE's prev close; delivery %; trade count; series (EQ = MIS-shortable, BE = trade-for-trade) | 2016-06 |
+| NSE F&O bhavcopy | futures OI across expiries, basis vs spot, options put/call OI, point-in-time F&O membership | 2016-06 |
+| NSE combineoi / ban / short-selling | crowding vs the market-wide position limit, next-day F&O ban, institutional short sales | 2016-06 |
+| NSE participant OI | FII / DII / Pro / Client net positioning in index and stock futures | 2016-08 |
+| Yahoo daily | S&P 500, Nasdaq, Russell, VIX, DAX, FTSE, Nikkei, Hang Seng, KOSPI, Shanghai, EEM/INDA, DXY, USDINR, crude, gold, copper, US 10y, NSE sector and midcap indices, 5 Indian ADRs | 2016-09 |
+
+Timing rule, enforced in one place (`features.py`): session t sees only data
+dated before t.  Asian closes come after the NSE open, so only their t−1 close
+is used; the F&O ban for t is read from "No Fresh Positions" at the end of t−1.
+
+### Three data traps found on the way
+
+* **Survivorship.** Yahoo is queried for *today's* NIFTY 500, so its decade of
+  history holds only names that became winners.  The point-in-time universe
+  passes through 1,685 distinct stocks over 2016-2026, not ~500.  The gap rule
+  does **better** on it (+29.9 vs +21.3 bps/trade, 2019-2025): the missing
+  names are mostly losers, which a short book wants.
+* **Unadjusted splits.** NSE's PREV_CLOSE is not always adjusted on ex-dates
+  (BAJFINANCE 2025-06-17 "opens −90%": a 1:10 split).  No stock can open 30%
+  down or 35% up on a normal day, so those days (1,276) are masked.
+* **Stale archive copies.** On holidays the archive can serve the previous
+  session's file under the holiday's name (2026-09-14 returns 2026-09-11
+  verbatim); the date printed inside each file now decides.  One file
+  (2022-08-08) is an .xlsx behind a .csv name; the older bhavcopy + MTO pair
+  covers it.
+
+### Protocol
+
+Walk-forward only: every score comes from a model fit on sessions strictly
+before it (yearly refits for research; production retrains weekly).  Model and
+book choices were made on **DEV = 2019-01 .. 2025-08**; **HOLD = 2025-09 ..
+2026-09** was evaluated once, at the end.  A day's book: top 8 of the 300 most
+liquid EQ stocks (as of t−1), excluding names that were trade-for-trade in
+the last 20 sessions, equal weight, 13 bps round trip.
+
+### DEV results (2019-01 .. 2025-08, 1,644 sessions)
+
+| book | net bps/trade | t | Sharpe | max DD | worst year |
+|---|---|---|---|---|---|
+| gap rule (live until now) | +29.9 | 8.0 | 3.1 | 13.9% | +19.6 (2022) |
+| random 8 shorts | +2.2 | 0.7 | 0.3 | 48% | — |
+| ridge, all features | +40.4 | 9.7 | 3.8 | 14.6% | |
+| boosted ranker, gap-family features only | +57.4 | 14.4 | | | |
+| boosted ranker, no F&O features | +65.1 | 15.4 | 6.0 | 9.3% | +44.8 (2025) |
+| **boosted ranker, all features** | **+68.1** | **16.6** | **6.5** | **8.1%** | +44.8 (2025) |
+| same, recency-weighted (half-life 2y) | +66.2 | 16.0 | 6.2 | 10.7% | +53.4 (2025) |
+
+Ranker minus rule, paired by day: **+38.2 bps, t = 13.0**, better on 63% of days.
+
+**Is it real?**
+* *Not illiquidity:* the ranker's picks trade ₹95 cr/day at the median (rule:
+  ₹92 cr); within the 100 most liquid names it still makes +39.3 vs +18.6.
+* *Not a few lucky days:* median trade +86.6 bps (above the mean); the top 1%
+  of trades are 15% of the P&L (rule: 28%); fewer stops (14% vs 19%).
+* *Costs:* at a 30 bps round trip +51.0 (rule +12.9).  With each stock charged
+  fees plus its own Abdi-Ranaldo spread estimate — deliberately pessimistic,
+  the estimator overstates spreads for volatile names — ranker +39.8, rule
+  +1.0: only the ranker clears it.
+* *Noise floor:* trained on labels shuffled within each day, the same
+  pipeline scores +9.8 bps (t 2.8) — its selection drifts to extreme names that
+  carry some of the gap effect — against +68.1 for the real model.
+* *No look-ahead:* live feature rows rebuilt from data truncated before the
+  session equal the history panel on every feature for 10 sessions audited
+  across 2019-2026 (one EWM warm-up difference on one day).
+
+**What did not help, and is not used:**
+* *Blending the rule back in* (static 25-75%) or *Hedge weights* (+60.1):
+  every unit of weight on the rule dilutes better picks.
+* *Confidence gating* (trade only predicted edge > X): no gain.
+* *A long leg* (ranker trained on long returns): +5.2 bps (t 1.5) before
+  realistic costs — Indian stocks drift down intraday; rejected.
+* *F&O-only universe* (always shortable): ranker +30.9, rule +9.0 — the edge
+  lives mostly in ordinary cash-market names, so the book is not restricted.
+* *Fewer names:* K=3 earns more per trade (+88.7) with more risk; K=8 has the
+  best t-stat and lowest drawdown and stays.
+
+### HOLD (2025-09-01 .. 2026-09-29, 267 sessions) — evaluated once
+
+| book | net bps/trade | t | Sharpe | max DD |
+|---|---|---|---|---|
+| gap rule | +31.5 | 3.5 | 3.4 | 9.3% |
+| **ranker** | **+45.2** | **4.4** | **4.3** | **8.0%** |
+| Hedge blend (for comparison) | +39.8 | 4.1 | 3.9 | 6.7% |
+
+Ranker minus rule: **+13.7 bps/day, t = 1.8**; the ranker beat the rule in 10 of
+13 months.  Under the pessimistic per-stock spread costs: ranker +13.3, rule +1.2.
+
+The honest reading: the ranker still wins out of sample, but its lead over the
+rule has **decayed** — about +38 bps/day in 2019-2024, about +14 in 2025 (inside
+DEV) and +14 in HOLD.  The absolute edge (+45 bps/trade) is intact; the part
+the model adds on top of the rule is a third of what it was.  That is exactly
+what the self-correcting loop below is for, and why the forward paper record,
+not any backtest, is now the arbiter.
+
+### The self-correcting loop (production)
+
+* Morning: pull NSE/F&O/global data → score **yesterday** for rule and ranker
+  on official bars → update the paired record, the guard and the drift CUSUM
+  → build today's features through the same code → rank → publish.
+* Guard: trade the ranker unless its last 60 sessions were worse than the
+  rule's with t < −2 (never triggered 2019-2025: the rolling 60-day edge was
+  negative in <1% of windows).
+* Weekly: rebuild the history, walk-forward the last two years, fit a
+  challenger on everything, promote only if its out-of-sample book beat the
+  rule with t ≥ 2.
+
+### Round 3 — literature anomalies, today's opening gap, adaptive memory
+
+Asked for more features, faster prediction at the right moment and better
+self-learning, three ideas were tested walk-forward on DEV (HOLD shown as a
+second look, since round 2 had already opened it):
+
+| model | DEV net bps/trade | DEV vs round-2 | HOLD net bps/trade | HOLD vs round-2 |
+|---|---|---|---|---|
+| round-2 ranker | +67.4 | — | +41.0 | — |
+| **+ anomaly features** (tug-of-war 5/60d, idiosyncratic vol, skew, MAX, Amihud, residual reversal, gap streak, days since last session) | **+68.8** | +1.4 (t 0.8) | **+45.4** | +4.4 (t 1.0) |
+| + today's opening gap (09:09 model, charged +5 bps) | +80.7 | +13.3 (t 5.0) | +39.5 | −1.5 (t −0.2) |
+| + today's gap, recency-weighted (half-life 1y) | +76.4 | +9.1 | +37.3 | −3.7 |
+| expanding + recency ensemble / Hedge over them | +82.5 | +15.1 | +38.0 | −3.0 |
+
+* **Anomaly features: adopted** for the 08:45 model — small but in the same
+  direction in both periods.
+* **Today's opening gap: built, gated.**  NSE's pre-open call auction fixes
+  every stock's open at 09:08 and publishes it (`nse_preopen.py`); a 09:09
+  re-rank turns it into a final list for a 09:15 market entry.  On 1-minute
+  bars, the day's biggest gap-ups trade +6 bps *higher* at 09:16 than in the
+  auction (noisy, ±40 bps per trade), so the later entry costs nothing on
+  average; it is still charged +5 bps.  The model was the best result of the
+  whole study on 2019-2025 (every year better, +63 vs +45 in 2025) and did
+  not beat the morning model in the held-out year.  It therefore runs only
+  when the weekly walk-forward over the last two years shows it beating the
+  morning model with t ≥ 2 — the loop turns it on if and when the evidence
+  comes back, not a judgment made on one noisy year.
+* **Adaptive memory (recency weighting, memory ensembles): rejected** — no gain
+  in either period.
+* The pre-open feed also carries what NSE does not archive (unmatched buy/sell
+  quantities, auction volume).  Every snapshot is archived from now on, so
+  auction imbalance can be tested once a few hundred sessions exist.
+
+**Also measured and not adopted:** volatility-scaled sizing (Sharpe 6.55 vs
+6.44, mean lower), confidence gating, stops other than 0.75 ATR for the
+ranker's picks (0.5-1.0 ATR is a plateau; no stop doubles the drawdown).
+
+**Event-driven learning.**  The learner now checks every evening: it retrains
+on Saturdays, and on any evening the drift alarm is up, instead of waiting for
+the weekend.
+
+---
+
 ## 2026-09-28 — the gap-reversal book replaces the model-ranked book
 
 **Why.** The live intraday tool had stopped making money: the model-ranked book
@@ -68,7 +227,8 @@ across it). The decade is the expectation: roughly +0.2% of capital a day on
 average, with losing months.
 
 **Data bug found on the way:** Yahoo writes placeholder daily bars on exchange
-holidays (volume 0, O=H=L=C; 480 of them on 2026-09-14). Left in, the holiday
+holidays (volume 0, O=H=L=C; 480 of them on the 2026-09-14 holiday — confirmed
+in round 2 from NSE's own files, whose 09-15 PREV_CLOSE equals 09-11's close). Left in, the holiday
 becomes "yesterday" and its zero gap replaces the real one.
 `gap_reversal.load_daily` drops them.
 
