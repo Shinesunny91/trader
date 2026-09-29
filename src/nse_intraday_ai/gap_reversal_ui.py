@@ -42,6 +42,7 @@ def _picks_table(payload: dict) -> pd.DataFrame:
             "09:15 open ₹": p.get("entry"),
             "BUY SL-M at ₹": p.get("stop_price"),
             "Turnover ₹cr/day": p["turnover_cr"],
+            "Score": p.get("score"),
         })
     return pd.DataFrame(rows)
 
@@ -75,13 +76,21 @@ def _render_picks() -> None:
                     f"{payload['generated_at'][11:16]} IST{levels}</small>", unsafe_allow_html=True)
         if session < now.date().isoformat():
             st.warning("This list is for a past session — the picks timer has not run yet today.")
+        if payload.get("drift_alarm"):
+            st.error("**Drift alarm.** The live book has run persistently below its backtest "
+                     f"(CUSUM {payload.get('cusum')} bps). Consider half size until the weekly review.")
+        c = st.columns(3)
+        who = payload.get("ranked_by", "rule")
+        guard_t = payload.get("guard_t")
+        c[0].metric("Ranked by", "trained model" if who == "ranker" else "gap rule",
+                    f"guard t {guard_t:+.1f}" if guard_t is not None else None,
+                    help="The model ranks unless its last 60 sessions were significantly worse "
+                         "than the gap rule's (t < -2); then the rule takes over automatically.")
+        model = payload.get("model") or {}
+        c[1].metric("Model trained through", model.get("trained_through") or "—")
+        c[2].metric("Data", payload.get("source", "yahoo-rule"))
         table = _picks_table(payload)
         st.dataframe(table, hide_index=True, width="stretch")
-    if st.button("Recompute from the cache", help="Re-rank from the cached daily bars "
-                 "(no download; the 08:45 timer refreshes them first)."):
-        with st.spinner("Ranking the universe..."):
-            G.publish_picks(fetch=False, log=lambda *_: None)
-        st.rerun()
 
 
 def _render_workflow(config: G.GapReversalConfig) -> None:
@@ -138,6 +147,40 @@ def _render_evidence() -> None:
                    f"max drawdown {decade['max_drawdown_pct']:.1f}% of capital. Every year positive.")
 
 
+def _render_learning() -> None:
+    """What the self-improving layers have concluded, and when."""
+    report = _read_json("../models/weekly_report.json")
+    state = _read_json("../models/meta_state.json")
+    st.markdown("**Weekly review** — the ranker is retrained on all data, re-tested "
+                "walk-forward over the last two years, and promoted only if its "
+                "out-of-sample book beat the gap rule (t ≥ 2).")
+    if report is None:
+        st.info("No weekly review yet (`python scripts/learn.py`, or the nse-gap-learn timer).")
+    else:
+        r, b, v = report["ranker"], report["rule"], report["vs_rule"]
+        c = st.columns(4)
+        c[0].metric("Verdict", "promoted" if report["promoted"] else "kept previous")
+        c[1].metric("Ranker, net/trade", f"{r.get('net_bps_per_trade', 0):+.1f} bps", f"t {r.get('t_stat')}")
+        c[2].metric("Gap rule, net/trade", f"{b.get('net_bps_per_trade', 0):+.1f} bps", f"t {b.get('t_stat')}")
+        c[3].metric("Ranker − rule", f"{v['mean_diff_bps']:+.1f} bps/day", f"t {v['t_stat']}")
+        st.caption(f"Window {report['window'][0]} → {report['window'][1]} · challenger "
+                   f"{report['challenger']} · reviewed {report['at'][:16]}")
+    st.markdown("**Daily expert weights** (Hedge, learned from each morning's realised results)")
+    if not state or not state.get("history"):
+        st.info("No sessions learned yet — the first update happens on the next morning run.")
+        return
+    hist = pd.DataFrame([{"session": h["session"], **h["weights"]} for h in state["history"]])
+    fig = go.Figure()
+    for col in [c for c in hist.columns if c != "session"]:
+        fig.add_scatter(x=hist["session"], y=hist[col], name=col, mode="lines")
+    fig.update_layout(height=260, margin={"l": 10, "r": 10, "t": 10, "b": 10},
+                      yaxis={"title": "weight", "range": [0, 1]}, legend={"orientation": "h"})
+    st.plotly_chart(fig, width="stretch")
+    st.caption(f"Learned through {state.get('updated_through')} · drift CUSUM "
+               f"{state.get('cusum', 0):.0f} / {state.get('threshold_bps')} bps "
+               f"(expected {state.get('expected_bps'):.1f} bps/trade)")
+
+
 def _render_paper_book() -> None:
     path = OUT / "paper_book.csv"
     if not path.exists():
@@ -165,7 +208,7 @@ def render() -> None:
         f"{config.square_off}. Research tool — not investment advice; results are "
         "backtests and paper trades, and past edge can decay."
     )
-    tabs = st.tabs(["Today", "How to trade it", "Backtest", "Paper record", "Risks"])
+    tabs = st.tabs(["Today", "How to trade it", "Backtest", "Paper record", "Learning", "Risks"])
     with tabs[0]:
         _render_picks()
     with tabs[1]:
@@ -175,6 +218,8 @@ def render() -> None:
     with tabs[3]:
         _render_paper_book()
     with tabs[4]:
+        _render_learning()
+    with tabs[5]:
         st.markdown(
             """
 - **Expect about +0.2% of capital a day on average, not +10% a fortnight.** The

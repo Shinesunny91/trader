@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/systemd"
 DEST="$HOME/.config/systemd/user"
-TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record)
+TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record nse-gap-learn)
 # Units from earlier layouts that no longer exist in this repo.
 RETIRED=(nse-paper-book nse-candidate-paper nse-learn nse-retrain nse-logrotate)
 

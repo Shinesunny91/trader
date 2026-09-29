@@ -40,6 +40,7 @@ UNITS = [
     "nse-gap-picks.timer",
     "nse-gap-levels.timer",
     "nse-gap-record.timer",
+    "nse-gap-learn.timer",
 ]
 
 
@@ -132,6 +133,20 @@ def check_book(now: datetime) -> list[tuple[str, str, str]]:
         stale = due and now.strftime("%H:%M") <= "15:30" and session < now.date().isoformat()
         out.append(("gap-reversal picks", FAIL if stale else OK, f"list for {session}"))
 
+    report = ROOT / "data" / "models" / "weekly_report.json"
+    if report.exists():
+        r = json.loads(report.read_text())
+        age = (now.date() - datetime.fromisoformat(r["at"]).date()).days
+        out.append(("weekly model review", OK if age <= 9 else WARN,
+                    f"{r['at'][:10]} ({age}d ago), {'promoted' if r['promoted'] else 'kept previous'}"))
+    else:
+        out.append(("weekly model review", WARN, "never run (python scripts/learn.py)"))
+    state = ROOT / "data" / "models" / "meta_state.json"
+    if state.exists():
+        st = json.loads(state.read_text())
+        out.append(("drift alarm", FAIL if st.get("alarm") else OK,
+                    f"CUSUM {st.get('cusum', 0):.0f}/{st.get('threshold_bps')} bps, "
+                    f"learned through {st.get('updated_through')}"))
     record = book / "paper_book.csv"
     if not record.exists():
         out.append(("gap-reversal paper book", WARN, "no session recorded yet"))

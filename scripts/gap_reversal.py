@@ -70,11 +70,31 @@ def push(title: str, body: str, *, enabled: bool, priority: str = "high") -> Non
 
 # ── commands ────────────────────────────────────────────────────────────────
 
+def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.Pick], dict]:
+    """The NSE-data pipeline (experts + Hedge blend); the Yahoo gap rule if it fails."""
+    from nse_intraday_ai import pipeline as P
+
+    target = session or G.next_session()
+    try:
+        prev, picks, info = P.morning(target, CONFIG, fetch=fetch)
+        G.save_picks(target, picks, CONFIG, based_on=prev.isoformat(), source="nse", **info)
+        return target, prev, picks, info
+    except Exception as exc:                                  # noqa: BLE001
+        # A broken morning must still produce a correct list if one can be
+        # made: the gap rule on Yahoo data has its own freshness guard.
+        print(f"NSE pipeline failed ({type(exc).__name__}: {exc}); falling back to the gap rule")
+        target, last, picks = G.publish_picks(target, CONFIG, fetch=fetch)
+        info = {"fallback": f"{type(exc).__name__}: {exc}"[:200]}
+        payload = G.read_picks() or {}
+        G.save_picks(target, picks, CONFIG, based_on=payload.get("based_on"), source="yahoo-rule", **info)
+        return target, last, picks, info
+
+
 def cmd_picks(args) -> None:
     wait_for_clock()
     session = date.fromisoformat(args.date) if args.date else None
     try:
-        session, last, picks = G.publish_picks(session, CONFIG, fetch=not args.no_fetch)
+        session, last, picks, info = _publish(session, fetch=not args.no_fetch)
     except G.StaleDataError as exc:
         push("⚠ Gap-reversal: NO LIST", f"{exc}.\nNo picks published — do not trade a list "
              "from an earlier message. Retry: python scripts/gap_reversal.py picks",
@@ -91,11 +111,23 @@ def cmd_picks(args) -> None:
     if late:
         lines.insert(0, "⚠ LATE: the open has passed. The tested entry is the open itself — "
                         "entering now is a different, untested trade. Skip today.")
+    if info.get("drift_alarm"):
+        lines.insert(0, "⚠ DRIFT ALARM: the live book has been running persistently below its "
+                        "backtest. Consider half size until the weekly review.")
+    if info.get("ranked_by") == "ranker":
+        t = info.get("guard_t")
+        ranked = ("\nRanked by the trained model"
+                  + (f" (60-session edge over the gap rule: t={t:+.1f})." if t is not None else "."))
+    elif info.get("ranked_by") == "rule" and "fallback" not in info:
+        ranked = ("\nRanked by the gap rule — the model's guard has switched it off "
+                  f"(t={info.get('guard_t')}) or no model is promoted yet.")
+    else:
+        ranked = f"\nRanked by the gap rule ({info.get('fallback', 'fallback')})."
     body = "\n".join(lines) + (
         f"\nIf a name can't be shorted (ASM/T2T), use the next: {reserves}"
         f"\nEnter: MIS market SELL in pre-open 09:00-09:07 (or 09:15 sharp)."
         f"\nThen: BUY SL-M at your fill + the stop shown. Cover all at {CONFIG.square_off}."
-        f"\n~₹{CONFIG.capital / CONFIG.picks:,.0f} each, based on {last} closes."
+        f"\n~₹{CONFIG.capital / CONFIG.picks:,.0f} each, based on {last} closes." + ranked
     )
     push(f"📉 Gap-reversal shorts for {session:%a %d %b}", body, enabled=args.push)
 

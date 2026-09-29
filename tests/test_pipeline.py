@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from datetime import date
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from nse_intraday_ai import meta as M
+from nse_intraday_ai import nse_bhav
+from nse_intraday_ai import pipeline as P
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(nse_bhav, "CACHE", tmp_path)
+
+    def put(day: date, holiday: bool = False):
+        path = nse_bhav._holiday_marker(day, tmp_path) if holiday else nse_bhav._path(day, tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    return put
+
+
+def test_previous_session_skips_weekends_and_verified_holidays(cache):
+    cache(date(2026, 9, 11))                       # Friday: a session
+    cache(date(2026, 9, 14), holiday=True)         # Monday: holiday marker
+    assert P.previous_session(date(2026, 9, 15)) == date(2026, 9, 11)
+    cache(date(2026, 9, 15))
+    assert P.previous_session(date(2026, 9, 16)) == date(2026, 9, 15)
+
+
+def test_previous_session_refuses_a_day_without_file_or_marker(cache):
+    # 2026-09-29 morning: the previous day's file had not arrived.  The morning
+    # must stop rather than silently rank on the day before it.
+    cache(date(2026, 9, 28))
+    with pytest.raises(P.DataNotReady):
+        P.previous_session(date(2026, 9, 30))
+
+
+def _rows(n=30, seed=0):
+    rng = np.random.default_rng(seed)
+    idx = pd.MultiIndex.from_product([[date(2026, 9, 29)], [f"S{i}" for i in range(n)]],
+                                     names=["session", "symbol"])
+    return pd.DataFrame({"gap1": rng.normal(0, 0.02, n), "short_bps": rng.normal(0, 100, n),
+                         "turn_rank": np.arange(1, n + 1, dtype=float)}, index=idx)
+
+
+def test_top_book_takes_the_k_best_scores_net_of_cost():
+    rows = _rows()
+    score = pd.Series(np.arange(30, 0, -1, dtype=float), index=rows.index)   # S0 best
+    mask = rows["turn_rank"] <= 30
+    got = P.top_book(rows["short_bps"], score, mask, k=4, cost=10.0)
+    assert got == pytest.approx(rows["short_bps"].iloc[:4].mean() - 10.0)
+    assert P.top_book(rows["short_bps"], score, rows["turn_rank"] <= 2, k=4) is None
+
+
+def test_blend_follows_the_weights():
+    rows = _rows()
+    mask = pd.Series(True, index=rows.index)
+    a = pd.Series(np.arange(30, dtype=float), index=rows.index)
+    scores = {"rule": a, "ranker": -a}
+    only_rule = P.blended(scores, M.MetaState(weights={"rule": 1.0, "ranker": 1e-9}), mask)
+    assert only_rule.idxmax() == a.idxmax()
+    only_ranker = P.blended(scores, M.MetaState(weights={"rule": 1e-9, "ranker": 1.0}), mask)
+    assert only_ranker.idxmax() == a.idxmin()

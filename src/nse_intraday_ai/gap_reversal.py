@@ -100,6 +100,8 @@ class Pick:
     reserve: bool = False
     entry: float | None = None   # filled in once the session has opened
     stop_price: float | None = None
+    score: float | None = None   # the ranking score (blended rank or the gap itself)
+    ranked_by: str = "rule"      # rule | ranker | blend
 
     @property
     def stop_pct(self) -> float:
@@ -311,6 +313,40 @@ def select(daily: dict[str, pd.DataFrame], session: date,
             position_value=round(qty * float(row["prev_close"]), 2),
             turnover_cr=round(float(row["turnover"]) / 1e7, 2),
             reserve=rank > config.picks,
+        ))
+    return picks
+
+
+def picks_from_rows(rows: pd.DataFrame, score: pd.Series,
+                    config: GapReversalConfig = GapReversalConfig(), *, universe: int | None = None,
+                    ranked_by: str = "blend") -> list[Pick]:
+    """Pick list from point-in-time feature rows (`features.build`) and a score.
+
+    `rows` is one session's candidates indexed by NSE symbol; the ranking is
+    `score` descending among the `universe` most liquid (turn_rank).  Prices and
+    stops come from the rows themselves: prev close = exp(log_price), ATR =
+    atr_pct x prev close — the same quantities the backtest used.
+    """
+    universe = universe or config.universe_size
+    frame = rows.assign(_score=score.reindex(rows.index))
+    frame = frame[(frame["turn_rank"] <= universe) & frame["_score"].notna()
+                  & frame["atr_pct"].gt(0) & frame["log_price"].notna()]
+    frame = frame[np.exp(frame["log_price"]) >= config.min_price]
+    frame = frame.sort_values("_score", ascending=False).head(config.picks + config.reserves)
+    per_position = config.capital / config.picks
+    picks: list[Pick] = []
+    for rank, (symbol, row) in enumerate(frame.iterrows(), 1):
+        prev_close = float(np.exp(row["log_price"]))
+        qty = int(per_position // prev_close)
+        if qty <= 0:
+            continue
+        atr = float(row["atr_pct"]) * prev_close
+        picks.append(Pick(
+            rank=rank, symbol=f"{symbol}.NS", side="SHORT",
+            gap_prev_pct=round(float(row["gap1"]) * 100, 3), prev_close=round(prev_close, 2),
+            atr=round(atr, 4), stop_distance=round(config.stop_atr * atr, 2), quantity=qty,
+            position_value=round(qty * prev_close, 2), turnover_cr=round(float(row["val20_cr"]), 2),
+            reserve=rank > config.picks, score=round(float(row["_score"]), 6), ranked_by=ranked_by,
         ))
     return picks
 

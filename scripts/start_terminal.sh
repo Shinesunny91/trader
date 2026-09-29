@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record)
+TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record nse-gap-learn)
 
 systemctl --user daemon-reload
 systemctl --user start nse-signal-lab.service
