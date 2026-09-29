@@ -47,6 +47,9 @@ class RankerConfig:
     l2_regularization: float = 1.0
     max_features: float = 0.6
     seeds: tuple[int, ...] = (0,)
+    # Recency weighting: a session's weight halves every `halflife_years` back
+    # from the newest training session (None = every session counts equally).
+    halflife_years: float | None = None
     exclude: tuple[str, ...] = DEFAULT_EXCLUDE   # features to leave out
 
 
@@ -82,6 +85,10 @@ class Ranker:
         feats = features or feature_columns(panel, config)
         X = panel[feats].to_numpy(np.float32)
         y = make_target(panel, config).to_numpy()
+        if sample_weight is None and config.halflife_years:
+            d = pd.to_datetime(panel.index.get_level_values("session"))
+            age = (d.max() - d).days.to_numpy() / 365.25
+            sample_weight = 0.5 ** (age / config.halflife_years)
         models = []
         for seed in config.seeds:
             m = HistGradientBoostingRegressor(
@@ -171,9 +178,9 @@ def walk_forward(panel: pd.DataFrame, config: RankerConfig = RankerConfig(), *,
         if not train.any() or (a - d[train].min()).days < 365 * min_train_years:
             continue
         weight = None
-        if halflife_years:
+        if halflife_years or config.halflife_years:
             age = (a - d[train]).days.to_numpy() / 365.25
-            weight = 0.5 ** (age / halflife_years)
+            weight = 0.5 ** (age / (halflife_years or config.halflife_years))
         model = Ranker.fit(panel[train], config, sample_weight=weight)
         out[test] = model.score(panel[test])
         if log:

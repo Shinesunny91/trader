@@ -55,13 +55,15 @@ class MetaState:
 
     # ── persistence ────────────────────────────────────────────────────────
     @classmethod
-    def load(cls, path: Path = STATE) -> "MetaState":
+    def load(cls, path: Path | None = None) -> "MetaState":
+        path = STATE if path is None else path      # resolved at call time, not import time
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
         return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
 
-    def save(self, path: Path = STATE) -> None:
+    def save(self, path: Path | None = None) -> None:
+        path = STATE if path is None else path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2, default=str))
 
