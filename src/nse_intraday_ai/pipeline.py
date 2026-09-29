@@ -1,18 +1,21 @@
 """The book's daily and weekly loops: data in, experts scored, weights learned, picks out.
 
-Morning (before the pre-open):
-  1. refresh   NSE equity + F&O bhavcopies, participant OI, overnight global closes
-  2. learn     score the *previous* session for every expert against what actually
-               happened (official NSE bars) and fold it into the Hedge weights and
-               the drift alarm — the book adapts every day without retraining
+08:45 (before the pre-open auction):
+  1. refresh   NSE equity + F&O bhavcopies, crowding files, participant OI,
+               overnight global closes
+  2. learn     grade the *previous* session for every expert (gap rule, morning
+               ranker, open ranker) on official NSE bars; extend their paired
+               record (the guard) and the drift alarm
   3. rank      build today's features through the live path (the same code that
-               built the training data), score each expert, blend, publish picks
+               built the training data) and publish the preliminary list
 
-Weekly:
-  rebuild the full point-in-time history, re-run the walk-forward over the last
-  two years, fit a challenger on everything, and promote it only if its
-  out-of-sample book beat the gap rule — otherwise the champion stays, or the
-  book runs on the rule alone.
+09:09 (after the auction, before the continuous open):
+  archive the auction snapshot; if the open model is promoted and its guard
+  allows, re-rank on today's opening prices and publish the final list
+
+Weekly (and on a drift alarm):
+  rebuild the full point-in-time history, walk-forward the last two years,
+  fit challengers, promote each model only on out-of-sample evidence.
 """
 from __future__ import annotations
 
@@ -210,17 +213,26 @@ def open_rerank(session: date, config: G.GapReversalConfig = G.GapReversalConfig
 
     open_model = R.load_champion("ranker_open")
     state = M.MetaState.load()
-    if open_model is None:
-        log("  no promoted open model: the 08:45 list stands")
-        return None
-    if traded_expert(state, {"rule", "ranker", "ranker_open"}) != "ranker_open":
-        log("  the open model's guard is off (recent record not good enough): 08:45 list stands")
-        return None
-    final = preopen if preopen is not None else nse_preopen.wait_and_fetch(session, log=log)
+    # Fetch and archive the auction first, every day, whether or not a model is
+    # promoted: the archive is what the auction-microstructure features learn
+    # from, and it only grows if it is written on the days nobody trades on it.
+    try:
+        final = preopen if preopen is not None else nse_preopen.wait_and_fetch(session, log=log)
+    except nse_preopen.PreOpenNotReady:
+        if open_model is None:
+            log("  pre-open feed unavailable; no open model promoted anyway")
+            return None
+        raise
     try:
         nse_preopen.archive(session, final)
     except Exception as exc:                                  # noqa: BLE001
         log(f"  pre-open archive failed: {exc}")
+    if open_model is None:
+        log("  no promoted open model: the 08:45 list stands (auction archived)")
+        return None
+    if traded_expert(state, {"rule", "ranker", "ranker_open"}) != "ranker_open":
+        log("  the open model's guard is off (recent record not good enough): 08:45 list stands")
+        return None
     cached = pickle.loads(LIVE_INPUTS.read_bytes()) if LIVE_INPUTS.exists() else None
     inputs = (cached["inputs"] if cached and cached["session"] == session
               else FT.load_inputs(session - timedelta(days=420), session - timedelta(days=1)))

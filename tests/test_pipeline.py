@@ -78,6 +78,17 @@ def test_traded_expert_prefers_the_most_refined_list_its_record_allows():
 
 
 def test_open_rerank_keeps_the_morning_list_without_an_open_model(monkeypatch, tmp_path):
+    from nse_intraday_ai import nse_preopen as PO
+
     monkeypatch.setattr(M, "STATE", tmp_path / "state.json")
     monkeypatch.setattr(P.R, "load_champion", lambda name="ranker": None)
-    assert P.open_rerank(date(2026, 9, 30), log=lambda *a: None) is None
+    monkeypatch.setattr(PO, "ARCHIVE_DIR", tmp_path / "preopen")
+
+    def unavailable(*a, **k):
+        raise PO.PreOpenNotReady("feed down")
+    monkeypatch.setattr(PO, "wait_and_fetch", unavailable)
+    assert P.open_rerank(date(2026, 9, 30), log=lambda *a: None) is None      # quietly
+
+    snap = pd.DataFrame({"symbol": ["A"], "series": ["EQ"], "iep": [101.0], "prev_close": [100.0]})
+    assert P.open_rerank(date(2026, 9, 30), preopen=snap, log=lambda *a: None) is None
+    assert (tmp_path / "preopen" / "2026" / "preopen_20260930.parquet").exists()   # archived anyway
