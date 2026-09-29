@@ -64,6 +64,15 @@ The ranker's *lead* over the rule has shrunk recently (about +14 bps a day in
 held at about +45 bps/trade — which is why the guard, the drift alarm and the
 weekly re-validation exist.
 
+**Execution check on 5-minute bars** (the last 41 sessions, Aug–Sep 2026: fill
+at the 09:15 open, stop on the 5-minute path, exit 15:15, Groww costs + 3 bps
+slippage per leg): ranker **+7.6%** on ₹10L (+18.6 bps/trade), gap rule
+**+9.8%** (+23.8).  Both profitable; the daily-bar research overstates by
+~5–6 bps/trade (mostly the 15:15 exit vs the close) and tracks trade by trade
+at 0.97–0.98 correlation.  Over these two months the simple rule did better —
+not statistically significant (t ≈ −0.6), so the guard keeps the ranker; if
+it persists, the guard hands the book to the rule by itself.
+
 Why it is believable, in one paragraph: the ranker's picks are as liquid as the
 rule's; its median trade beats its mean (not a few lucky days); it keeps its
 lead within the 100 most liquid names, at 30 bps costs, and under a
