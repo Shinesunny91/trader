@@ -29,6 +29,12 @@ MODELS = ROOT / "data" / "models"
 NON_FEATURES = set(META_COLUMNS) | set(TARGETS)
 
 
+# Crowding / F&O-ban / short-sale features (nse_extra) were measured and add
+# nothing: 2019-2025 walk-forward +67.6 bps/trade with them, +68.1 without.
+# Neutral features are dropped — one less data dependency for the live model.
+DEFAULT_EXCLUDE = ("mwpl_util1", "ban_today", "short_frac", "x_banned", "x_mwpl_med")
+
+
 @dataclass(frozen=True)
 class RankerConfig:
     target: str = "short_bps"
@@ -41,7 +47,7 @@ class RankerConfig:
     l2_regularization: float = 1.0
     max_features: float = 0.6
     seeds: tuple[int, ...] = (0,)
-    exclude: tuple[str, ...] = ()      # features to leave out
+    exclude: tuple[str, ...] = DEFAULT_EXCLUDE   # features to leave out
 
 
 def feature_columns(panel: pd.DataFrame, config: RankerConfig = RankerConfig()) -> list[str]:
@@ -120,13 +126,14 @@ class Ranker:
                    meta=meta)
 
 
-def champion_path() -> Path:
-    return MODELS / "champion.json"
+def champion_path(name: str = "ranker") -> Path:
+    """Pointer file for a named champion: 'ranker' (08:45) or 'ranker_open' (09:09)."""
+    return MODELS / ("champion.json" if name == "ranker" else f"champion_{name}.json")
 
 
-def load_champion() -> Ranker | None:
+def load_champion(name: str = "ranker") -> Ranker | None:
     """The promoted model, or None (the book then runs on the gap rule)."""
-    pointer = champion_path()
+    pointer = champion_path(name)
     if not pointer.exists():
         return None
     try:
@@ -135,9 +142,9 @@ def load_champion() -> Ranker | None:
         return None
 
 
-def promote(directory: Path, evidence: dict) -> None:
-    champion_path().parent.mkdir(parents=True, exist_ok=True)
-    champion_path().write_text(json.dumps({
+def promote(directory: Path, evidence: dict, name: str = "ranker") -> None:
+    champion_path(name).parent.mkdir(parents=True, exist_ok=True)
+    champion_path(name).write_text(json.dumps({
         "directory": directory.name, "promoted_at": datetime.now().isoformat(timespec="seconds"),
         "evidence": evidence}, indent=2, default=str))
 

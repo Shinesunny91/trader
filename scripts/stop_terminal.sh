@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record nse-gap-learn)
+TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-final nse-gap-levels nse-gap-record nse-gap-learn)
 
 systemctl --user stop nse-signal-lab.service 2>/dev/null || true
 for t in "${TIMERS[@]}"; do systemctl --user stop "$t.timer" 2>/dev/null || true; done

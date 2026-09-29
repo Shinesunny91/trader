@@ -139,13 +139,27 @@ def _wide(frame: pd.DataFrame, col: str, sessions: pd.Index, symbols: pd.Index) 
     return w.reindex(index=sessions, columns=symbols)
 
 
+# Features that exist only once the pre-open auction has set today's opening
+# price (09:08 IST).  The 08:45 model must never see them; the 09:09 model does.
+OPEN_FEATURES = ("gap0", "gap0_atr", "gap0_xrank", "gap0_sec", "gap0_vs_sec", "gap0_minus_mkt",
+                 "gap01", "gap0_x_relvol", "gap0_x_lowdeliv", "x_gap0_med", "x_gap0_breadth",
+                 "x_gap0_disp")
+
+
 def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = None,
-          min_price: float = 50.0, stop_atr: float = STOP_ATR, prefilter: int = 600) -> pd.DataFrame:
+          min_price: float = 50.0, stop_atr: float = STOP_ATR, prefilter: int = 600,
+          with_open: bool = False, opens: pd.DataFrame | None = None) -> pd.DataFrame:
     """Feature rows (session, symbol) for the point-in-time liquid universe.
 
     Research (live_session=None): every session, with targets.  Live: only
     `live_session`, which must be after the last session in the data; it gets
     the same features, computed from the rows before it, and no targets.
+
+    with_open=True adds the at-the-open family (today's gap and friends).  In
+    research the session's own official open is used — the price the pre-open
+    auction set at 09:08, before the continuous market opens at 09:15.  Live,
+    `opens` (index symbol; columns open, prev_close — NSE's pre-open feed, whose
+    previous close is adjusted for the day's corporate actions) supplies it.
     """
     raw = inputs.bhav.drop_duplicates(["session", "symbol", "series"])
     eq_long = raw.assign(eq=(raw["series"] == "EQ").astype(float))
@@ -167,6 +181,9 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
     shares = W("volume")
     eq = eq_long.pivot_table(index="session", columns="symbol", values="eq", aggfunc="max") \
         .reindex(index=sessions, columns=symbols)
+    if live_session is not None and opens is not None:
+        o.loc[live_session] = opens["open"].reindex(symbols).to_numpy(dtype=float)
+        pc.loc[live_session] = opens["prev_close"].reindex(symbols).to_numpy(dtype=float)
     bad = (o <= 0) | (c <= 0) | (pc <= 0) | (h < l)
     o, h, l, c, pc = (x.mask(bad) for x in (o, h, l, c, pc))
 
@@ -229,6 +246,29 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
     f["gap1_x_lowdeliv"] = f["gap1"] * (1 - f["deliv1"] / 100)
     f["was_be_20"] = lag((1 - eq.fillna(0)).rolling(20, min_periods=1).max())
 
+    # Cross-sectional anomaly features from the literature, all as of t-1:
+    # multi-horizon overnight-vs-intraday "tug of war" (Lou, Polk & Skouras 2019),
+    # idiosyncratic volatility (Ang et al. 2006), skewness, the MAX effect (Bali,
+    # Cakici & Whitelaw 2011), Amihud (2002) illiquidity, market-residual
+    # reversal, and overnight-gap persistence.
+    mkt_r = r.median(axis=1)
+    resid = r.sub(mkt_r, axis=0)
+    f["tug5"] = lag(gap.rolling(5, min_periods=3).mean() - intra.rolling(5, min_periods=3).mean())
+    f["tug60"] = lag(gap.rolling(60, min_periods=30).mean() - intra.rolling(60, min_periods=30).mean())
+    f["ivol20"] = lag(resid.rolling(20, min_periods=10).std())
+    f["skew20"] = lag(r.rolling(20, min_periods=15).skew())
+    f["max21"] = lag(r.rolling(21, min_periods=10).max())
+    f["amihud20"] = lag(np.log((r.abs() / val.replace(0, np.nan)).rolling(20, min_periods=10).mean() * 1e9))
+    f["res_ret1"] = lag(resid)
+    f["res_ret5"] = lag(resid.rolling(5, min_periods=3).sum())
+    up_gap = (gap > 0).astype(float).where(gap.notna())
+    runs = np.zeros(up_gap.shape)
+    arr = up_gap.to_numpy()
+    for i in range(1, arr.shape[0]):
+        runs[i] = np.where(arr[i] == 1, runs[i - 1] + 1, 0)
+    runs[0] = np.where(arr[0] == 1, 1, 0)
+    f["gap_streak"] = lag(pd.DataFrame(np.minimum(runs, 10), index=up_gap.index, columns=up_gap.columns))
+
     # Effective spread (Abdi & Ranaldo 2017) from close/high/low, causal: the
     # evaluator's liquidity cost, never a model input.
     lc, eta = np.log(c), (np.log(h) + np.log(l)) / 2
@@ -251,8 +291,25 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
         f[f"{name}_vs_sec"] = f[name] - med
     g1 = f["gap1"].where(in_univ)
     f["gap1_xrank"] = g1.rank(axis=1, pct=True)
+    if with_open:
+        g0 = gap                                   # today's own gap: open(t) / prev close - 1
+        g0u = g0.where(in_univ)
+        f["gap0"] = g0
+        f["gap0_atr"] = g0 / f["atr_pct"]
+        f["gap0_xrank"] = g0u.rank(axis=1, pct=True)
+        med0 = g0u.T.groupby(sec_of).transform("median").T
+        f["gap0_sec"] = med0
+        f["gap0_vs_sec"] = g0 - med0
+        f["gap0_minus_mkt"] = g0.sub(g0u.median(axis=1), axis=0)
+        f["gap01"] = g0 + f["gap1"]                # two nights in a row
+        f["gap0_x_relvol"] = g0 * np.log1p(f["relvol1"].clip(0, 20))
+        f["gap0_x_lowdeliv"] = g0 * (1 - f["deliv1"] / 100)
 
     mkt = pd.DataFrame(index=sessions)
+    if with_open:
+        mkt["x_gap0_med"] = g0u.median(axis=1)
+        mkt["x_gap0_breadth"] = (g0u > 0).sum(axis=1) / g0u.notna().sum(axis=1)
+        mkt["x_gap0_disp"] = g0u.std(axis=1)
     mkt["x_gap1_med"] = g1.median(axis=1)
     mkt["x_gap1_breadth"] = (g1 > 0).sum(axis=1) / g1.notna().sum(axis=1)
     mkt["x_gap1_disp"] = g1.std(axis=1)
@@ -344,6 +401,9 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
             mkt[f"oi_{col}_d5"] = prior_value(part[col] - part[col].shift(5), sessions)
 
     dts = pd.to_datetime(sessions)
+    # Calendar days since the previous session: 1 normally, 3 after a weekend,
+    # more after a holiday — news accumulates, gaps grow.
+    mkt["days_since_prev"] = pd.Series(dts, index=sessions).diff().dt.days.to_numpy()
     mkt["dow"] = dts.dayofweek
     mkt["month"] = dts.month
     mkt["dom"] = dts.day

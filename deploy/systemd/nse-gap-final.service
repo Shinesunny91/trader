@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal book: re-rank on the pre-open auction prices, push the final list
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/gap_reversal.py final --push
+TimeoutStartSec=300

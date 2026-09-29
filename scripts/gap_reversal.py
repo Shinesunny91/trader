@@ -1,6 +1,7 @@
 """Run the gap-reversal book: pre-open picks, opening stops, paper record, backtest.
 
-    python scripts/gap_reversal.py picks            # the next session's short list
+    python scripts/gap_reversal.py picks            # 08:45: the session's short list
+    python scripts/gap_reversal.py final            # 09:09: re-rank on today's opening prices
     python scripts/gap_reversal.py levels           # after 09:15: exact stop prices
     python scripts/gap_reversal.py record           # after the close: paper result
     python scripts/gap_reversal.py backtest         # last 14 sessions + dev + decade
@@ -130,6 +131,49 @@ def cmd_picks(args) -> None:
         f"\n~₹{CONFIG.capital / CONFIG.picks:,.0f} each, based on {last} closes." + ranked
     )
     push(f"📉 Gap-reversal shorts for {session:%a %d %b}", body, enabled=args.push)
+
+
+def cmd_final(args) -> None:
+    """09:09 — re-rank with the auction's opening prices and push the FINAL list."""
+    from nse_intraday_ai import pipeline as P
+
+    wait_for_clock()
+    session = date.fromisoformat(args.date) if args.date else datetime.now(IST).date()
+    payload = G.read_picks()
+    if payload is None or payload.get("session") != session.isoformat():
+        print(f"no 08:45 list for {session}; nothing to re-rank")
+        return
+    try:
+        result = P.open_rerank(session, CONFIG)
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"09:09 re-rank failed ({type(exc).__name__}: {exc}); the 08:45 list stands")
+        push(f"Gap-reversal {session:%d %b}: 08:45 list stands",
+             f"The 09:09 re-rank could not run ({type(exc).__name__}). Trade the 08:45 list.",
+             enabled=args.push, priority="default")
+        return
+    if result is None:
+        push(f"✅ Gap-reversal {session:%d %b}: 08:45 list is final",
+             "The open model is not promoted (or its guard is off): trade the 08:45 list.",
+             enabled=args.push, priority="default")
+        return
+    picks, info = result
+    preliminary = [p["symbol"] for p in payload.get("picks", []) if not p.get("reserve")]
+    extra = {k: v for k, v in payload.items() if k not in ("session", "generated_at", "config", "picks")}
+    G.save_picks(session, picks, CONFIG, **{**extra, **info, "preliminary": preliminary,
+                                            "final_at": datetime.now(IST).isoformat(timespec="seconds")})
+    main = [p for p in picks if not p.reserve]
+    reserves = ", ".join(p.symbol.removesuffix(".NS") for p in picks if p.reserve)
+    changed = len({p.symbol for p in main} - set(preliminary))
+    lines = [f"{p.rank}. SHORT {p.quantity} {p.symbol.removesuffix('.NS'):<11} "
+             f"stop +₹{p.stop_distance:,.1f} ({p.stop_pct:.1f}%)"
+             for p in main]
+    body = "\n".join(lines) + (
+        f"\nReserves: {reserves}"
+        f"\nEnter: MIS market SELL at 09:15:00 sharp (this list uses today's opening prices)."
+        f"\nThen: BUY SL-M at your fill + the stop shown. Cover all at {CONFIG.square_off}."
+        f"\n{changed} of 8 names differ from the 08:45 list. If you already entered the 08:45 "
+        f"list in the pre-open, keep it — do not double up.")
+    push(f"🎯 FINAL gap-reversal shorts {session:%a %d %b}", body, enabled=args.push)
 
 
 def cmd_levels(args) -> None:
@@ -312,7 +356,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    for name in ("picks", "levels", "record"):
+    for name in ("picks", "final", "levels", "record"):
         p = sub.add_parser(name)
         p.add_argument("--date", help="ISO session date (default: the relevant session)")
         p.add_argument("--push", action="store_true", help="send to the phone via ntfy")
@@ -324,7 +368,7 @@ def main() -> None:
     b.add_argument("--fetch", action="store_true", help="download missing 5m bars (60-day limit)")
     b.add_argument("--save", action="store_true", help=f"write {BACKTEST.relative_to(ROOT)} for the app")
     args = parser.parse_args()
-    {"picks": cmd_picks, "levels": cmd_levels, "record": cmd_record,
+    {"picks": cmd_picks, "final": cmd_final, "levels": cmd_levels, "record": cmd_record,
      "backtest": cmd_backtest}[args.cmd](args)
 
 

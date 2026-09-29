@@ -1,8 +1,8 @@
 [Unit]
-Description=Weekly model review, Saturday morning
+Description=Model review: Saturdays, or any evening the drift alarm is up
 
 [Timer]
-OnCalendar=Sat *-*-* 10:00:00
+OnCalendar=*-*-* 19:00:00
 Persistent=true
 
 [Install]

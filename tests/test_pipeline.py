@@ -64,3 +64,20 @@ def test_blend_follows_the_weights():
     assert only_rule.idxmax() == a.idxmax()
     only_ranker = P.blended(scores, M.MetaState(weights={"rule": 1e-9, "ranker": 1.0}), mask)
     assert only_ranker.idxmax() == a.idxmin()
+
+
+def test_traded_expert_prefers_the_most_refined_list_its_record_allows():
+    st = M.MetaState(guard_window=5, guard_t=-2.0)
+    assert P.traded_expert(st, {"rule"}) == "rule"
+    assert P.traded_expert(st, {"rule", "ranker"}) == "ranker"                 # no record yet
+    assert P.traded_expert(st, {"rule", "ranker", "ranker_open"}) == "ranker_open"
+    for i in range(5):     # open model clearly worse than the morning model lately
+        st.track.append({"session": f"x{i}", "rule": 10.0 + i, "ranker": 60.0 + i % 2,
+                         "ranker_open": -50.0 + i % 3})
+    assert P.traded_expert(st, {"rule", "ranker", "ranker_open"}) == "ranker"
+
+
+def test_open_rerank_keeps_the_morning_list_without_an_open_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(M, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(P.R, "load_champion", lambda name="ranker": None)
+    assert P.open_rerank(date(2026, 9, 30), log=lambda *a: None) is None

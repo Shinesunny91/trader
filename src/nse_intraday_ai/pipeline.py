@@ -27,13 +27,19 @@ import pandas as pd
 from nse_intraday_ai import features as FT
 from nse_intraday_ai import gap_reversal as G
 from nse_intraday_ai import meta as M
-from nse_intraday_ai import nse_bhav, nse_extra, nse_fo
+from nse_intraday_ai import nse_bhav, nse_extra, nse_fo, nse_preopen
 from nse_intraday_ai import ranker as R
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORTS = ROOT / "data" / "models"
 BOOK_UNIVERSE = 300
 COST_BPS = 13.0
+# The 09:09 list is traded with a market order at 09:15, not in the auction.
+# Measured on 1-minute bars the first minute costs nothing on average for the
+# day's biggest gap-ups (+6 bps in the short's favour, noisy); 5 bps are charged
+# anyway so the open model has to beat the morning one net of a real penalty.
+OPEN_ENTRY_EXTRA_BPS = 5.0
+LIVE_INPUTS = REPORTS / "live_inputs.pkl"
 
 
 class DataNotReady(RuntimeError):
@@ -79,11 +85,14 @@ def previous_session(session: date) -> date:
 
 # ── experts ─────────────────────────────────────────────────────────────────
 
-def expert_scores(rows: pd.DataFrame, model: R.Ranker | None) -> dict[str, pd.Series]:
+def expert_scores(rows: pd.DataFrame, model: R.Ranker | None,
+                  open_model: R.Ranker | None = None) -> dict[str, pd.Series]:
     """Every expert's score for the candidate rows (higher = better short)."""
     scores = {"rule": rows["gap1"].astype(float)}
     if model is not None:
         scores["ranker"] = pd.Series(model.score(rows), index=rows.index)
+    if open_model is not None and "gap0" in rows.columns:
+        scores["ranker_open"] = pd.Series(open_model.score(rows), index=rows.index)
     return scores
 
 
@@ -101,26 +110,46 @@ def top_book(outcome: pd.Series, score: pd.Series, mask: pd.Series, k: int = 8,
     return float(outcome.reindex(s.nlargest(k).index).mean()) - cost
 
 
-def learn_from(session: date, state: M.MetaState, model: R.Ranker | None, *, log=print) -> bool:
-    """Fold the realised outcome of `session` into the Hedge weights (idempotent)."""
+def learn_from(session: date, state: M.MetaState, model: R.Ranker | None, *,
+               open_model: R.Ranker | None = None, log=print) -> bool:
+    """Grade every expert on `session`'s real outcome and fold it in (idempotent)."""
     if state.updated_through is not None and str(session) <= state.updated_through:
         return False
     inputs = FT.load_inputs(session - timedelta(days=420), session)
-    panel = FT.build(inputs)
+    panel = FT.build(inputs, with_open=True)
     if session not in set(panel.index.get_level_values("session")):
         log(f"  no labelled rows for {session}; weights unchanged")
         return False
     rows = panel.xs(session, level="session", drop_level=False)
     rows = rows[rows["was_be_20"].fillna(0) == 0]
     mask = rows["turn_rank"] <= BOOK_UNIVERSE
-    scores = expert_scores(rows, model)
-    returns = {name: top_book(rows["short_bps"], s, mask) for name, s in scores.items()}
-    traded, _ = state.guard() if "ranker" in scores else ("rule", None)
+    # A session the model was trained on is not evidence about it (Saturday's
+    # retrain includes Friday; Monday morning must not grade it on Friday).
+    if model is not None and model.trained_through and str(session) <= model.trained_through:
+        model = None
+    if open_model is not None and open_model.trained_through and str(session) <= open_model.trained_through:
+        open_model = None
+    scores = expert_scores(rows, model, open_model)
+    returns = {name: top_book(rows["short_bps"], s, mask,
+                              cost=COST_BPS + (OPEN_ENTRY_EXTRA_BPS if name == "ranker_open" else 0.0))
+               for name, s in scores.items()}
+    traded = traded_expert(state, set(scores))
     book = returns.get(traded)
     state.update(str(session), {k: v for k, v in returns.items() if v is not None}, book)
     log(f"  learned {session}: " + ", ".join(f"{k} {v:+.1f}bps" for k, v in returns.items() if v is not None)
         + f" | book {book:+.1f} | weights " + ", ".join(f"{k} {v:.2f}" for k, v in state.weights.items()))
     return True
+
+
+def traded_expert(state: M.MetaState, available: set[str]) -> str:
+    """Which expert's list the book trades: the most refined one its record allows."""
+    if "ranker" not in available:
+        return "rule"
+    morning_choice, _ = state.guard("ranker", "rule")
+    if morning_choice == "ranker" and "ranker_open" in available:
+        open_choice, _ = state.guard("ranker_open", "ranker")
+        return open_choice
+    return morning_choice
 
 
 # ── the morning run ─────────────────────────────────────────────────────────
@@ -133,13 +162,19 @@ def morning(session: date, config: G.GapReversalConfig = G.GapReversalConfig(), 
     prev = previous_session(session)
     model = R.load_champion()
     state = M.MetaState.load()
-    learn_from(prev, state, model, log=log)
+    learn_from(prev, state, model, open_model=R.load_champion("ranker_open"), log=log)
     state.save()
 
-    rows = FT.live(session)
+    inputs = FT.load_inputs(session - timedelta(days=420), session - timedelta(days=1))
+    rows = FT.build(inputs, live_session=session)
     rows = rows.xs(session, level="session", drop_level=False)
     if rows.empty:
         raise DataNotReady(f"no candidates could be built for {session}")
+    # Keep the loaded inputs for the 09:09 re-rank: it then only has to add
+    # today's opening prices instead of re-reading 14 months of files.
+    import pickle
+    LIVE_INPUTS.parent.mkdir(parents=True, exist_ok=True)
+    LIVE_INPUTS.write_bytes(pickle.dumps({"session": session, "inputs": inputs}, protocol=5))
     # Shortability: names moved to trade-for-trade in the last 20 sessions are
     # the ones brokers refuse to short intraday (measured cost of excluding
     # them: -0.7 bps/trade).
@@ -162,59 +197,111 @@ def morning(session: date, config: G.GapReversalConfig = G.GapReversalConfig(), 
     return prev, picks, info
 
 
+# ── the 09:09 re-rank on today's opening prices ─────────────────────────────
+
+def open_rerank(session: date, config: G.GapReversalConfig = G.GapReversalConfig(), *,
+                preopen: pd.DataFrame | None = None, log=print) -> tuple[list[G.Pick], dict] | None:
+    """Re-rank with the auction's opening prices; None = keep the 08:45 list.
+
+    Returns None when no open model is promoted, or when its paired record says
+    it has recently been worse than the morning ranker.
+    """
+    import pickle
+
+    open_model = R.load_champion("ranker_open")
+    state = M.MetaState.load()
+    if open_model is None:
+        log("  no promoted open model: the 08:45 list stands")
+        return None
+    if traded_expert(state, {"rule", "ranker", "ranker_open"}) != "ranker_open":
+        log("  the open model's guard is off (recent record not good enough): 08:45 list stands")
+        return None
+    final = preopen if preopen is not None else nse_preopen.wait_and_fetch(session, log=log)
+    try:
+        nse_preopen.archive(session, final)
+    except Exception as exc:                                  # noqa: BLE001
+        log(f"  pre-open archive failed: {exc}")
+    cached = pickle.loads(LIVE_INPUTS.read_bytes()) if LIVE_INPUTS.exists() else None
+    inputs = (cached["inputs"] if cached and cached["session"] == session
+              else FT.load_inputs(session - timedelta(days=420), session - timedelta(days=1)))
+    rows = FT.build(inputs, live_session=session, with_open=True, opens=nse_preopen.opens(final))
+    rows = rows.xs(session, level="session", drop_level=False)
+    rows = rows[(rows["was_be_20"].fillna(0) == 0) & rows["gap0"].notna()]
+    score = pd.Series(open_model.score(rows), index=rows.index)
+    picks = G.picks_from_rows(rows.droplevel("session"), score.droplevel("session"), config,
+                              universe=BOOK_UNIVERSE, ranked_by="ranker_open")
+    _, t = state.guard("ranker_open", "ranker")
+    info = {"ranked_by": "ranker_open", "guard_t": t, "auctions": int(len(final)),
+            "open_model": {"trained_through": open_model.trained_through,
+                           "evidence": open_model.meta.get("evidence")}}
+    return picks, info
+
+
 # ── the weekly learning job ─────────────────────────────────────────────────
 
-def weekly(*, config: R.RankerConfig | None = None, eval_years: float = 2.0,
-           min_t: float = 2.0, log=print) -> dict:
-    """Retrain, re-validate, and promote only on out-of-sample evidence."""
-    config = config or R.RankerConfig()
-    panel = FT.history()
+def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
+    """Retrain both models, re-validate walk-forward, promote each only on evidence.
+
+    ranker       (08:45, no knowledge of the open)   must beat the gap rule
+    ranker_open  (09:09, knows today's opening gap)  must beat the ranker, net of
+                                                     the extra cost of a 09:15 entry
+    """
+    morning_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + FT.OPEN_FEATURES)
+    open_cfg = R.RankerConfig()
+    panel = FT.history(with_open=True)
     last = max(panel.index.get_level_values("session"))
     start = (pd.Timestamp(last) - pd.DateOffset(years=int(eval_years))).strftime("%Y-%m-%d")
-    log(f"walk-forward {start}..{last} on {len(panel):,} rows")
-    oos = R.walk_forward(panel, config, start=start, refit="QS", log=log)
     clean = panel["was_be_20"].fillna(0) == 0          # the live book's shortability filter
+    log(f"walk-forward {start}..{last} on {len(panel):,} rows")
+    oos = R.walk_forward(panel, morning_cfg, start=start, refit="QS", log=log)
+    oos_open = R.walk_forward(panel, open_cfg, start=start, refit="QS", log=log)
     rule_book = R.book(panel, panel["gap1"].where(clean), universe=BOOK_UNIVERSE)
     model_book = R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE)
+    open_book = R.book(panel, oos_open.where(clean), universe=BOOK_UNIVERSE,
+                       cost_bps=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
     evidence = {
         "window": [start, str(last)],
-        "ranker": R.summarize(model_book, start),
         "rule": R.summarize(rule_book, start),
+        "ranker": R.summarize(model_book, start),
+        "ranker_open": R.summarize(open_book, start),
         "vs_rule": R.paired(model_book, rule_book, start),
+        "open_vs_ranker": R.paired(open_book, model_book, start),
         "ranker_liquidity_cost": R.summarize(
             R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE, cost_bps=None), start),
     }
-    challenger = R.Ranker.fit(panel, config)
-    challenger.meta["evidence"] = evidence
-    directory = challenger.save()
-    passed = (evidence["vs_rule"]["t_stat"] >= min_t and evidence["vs_rule"]["mean_diff_bps"] > 0
-              and evidence["ranker"]["net_bps_per_trade"] > 0)
-    if passed:
-        R.promote(directory, evidence)
-    # Replay the daily Hedge blend over the same out-of-sample window: its mean is
-    # what the live book (the blend, not the pure ranker) should earn, which is
-    # the drift alarm's reference; and a fresh install starts from its final
-    # weights instead of 50/50 (weights the live book has learned are kept).
+    verdicts = {}
+    for name, cfg, gate, own in (
+            ("ranker", morning_cfg, evidence["vs_rule"], evidence["ranker"]),
+            ("ranker_open", open_cfg, evidence["open_vs_ranker"], evidence["ranker_open"])):
+        challenger = R.Ranker.fit(panel, cfg)
+        challenger.meta["evidence"] = evidence
+        directory = challenger.save(R.MODELS / f"{name}_{challenger.trained_through}")
+        passed = gate["t_stat"] >= min_t and gate["mean_diff_bps"] > 0 and own["net_bps_per_trade"] > 0
+        if passed:
+            R.promote(directory, evidence, name)
+        verdicts[name] = {"promoted": passed, "challenger": directory.name}
+        log(f"  {name}: {'PROMOTED' if passed else 'kept previous'} ({directory.name})")
+
     state = M.MetaState.load()
-    mask = (panel["turn_rank"] <= BOOK_UNIVERSE) & oos.notna()
-    blend_daily, w_hist = M.hedge_replay({"rule": panel["gap1"], "ranker": oos}, panel["short_bps"],
-                                         universe_mask=mask, cost_bps=COST_BPS, eta=state.eta,
-                                         floor=state.floor)
-    evidence["hedge_blend_diagnostic"] = R.summarize(blend_daily, start)
-    if state.updated_through is None and not w_hist.empty:
-        state.weights = {k: float(v) for k, v in w_hist.iloc[-1].items()}
-    # Seed the guard's paired record with the out-of-sample window, so a fresh
-    # install can judge the ranker from day one (live sessions extend it).
-    if not any("ranker" in r for r in state.track):
-        j = pd.concat([model_book, rule_book], axis=1, keys=["ranker", "rule"]).dropna().tail(250)
-        seeded = [{"session": str(d), "ranker": float(a), "rule": float(b)} for d, (a, b) in j.iterrows()]
-        live = [r for r in state.track if r["session"] > seeded[-1]["session"]] if seeded else state.track
+    # Seed the guard's paired record with the out-of-sample window so a fresh
+    # install can judge both models from day one (live sessions extend it).
+    if not any("ranker_open" in r for r in state.track):
+        j = pd.concat([model_book, rule_book, open_book], axis=1,
+                      keys=["ranker", "rule", "ranker_open"]).dropna().tail(250)
+        seeded = [{"session": str(d), **{k: float(v) for k, v in row.items()}} for d, row in j.iterrows()]
+        live = [r for r in state.track if seeded and r["session"] > seeded[-1]["session"]]
         state.track = (seeded + live)[-500:]
-    ref = evidence["ranker"] if passed else evidence["rule"]
+    if verdicts["ranker_open"]["promoted"]:
+        ref = evidence["ranker_open"]
+    elif verdicts["ranker"]["promoted"]:
+        ref = evidence["ranker"]
+    else:
+        ref = evidence["rule"]
     state.expected_bps = float(ref.get("net_bps_per_trade", state.expected_bps))
     state.save()
-    report = {"at": datetime.now().isoformat(timespec="seconds"), "promoted": passed,
-              "challenger": directory.name, **evidence}
+    report = {"at": datetime.now().isoformat(timespec="seconds"), "verdicts": verdicts,
+              "promoted": verdicts["ranker"]["promoted"], "challenger": verdicts["ranker"]["challenger"],
+              **evidence}
     REPORTS.mkdir(parents=True, exist_ok=True)
     (REPORTS / "weekly_report.json").write_text(json.dumps(report, indent=2, default=str))
     return report

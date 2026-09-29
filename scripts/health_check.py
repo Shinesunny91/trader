@@ -38,6 +38,7 @@ UNITS = [
     "nse-context.timer",
     "nse-health.timer",
     "nse-gap-picks.timer",
+    "nse-gap-final.timer",
     "nse-gap-levels.timer",
     "nse-gap-record.timer",
     "nse-gap-learn.timer",
@@ -137,7 +138,7 @@ def check_book(now: datetime) -> list[tuple[str, str, str]]:
     if report.exists():
         r = json.loads(report.read_text())
         age = (now.date() - datetime.fromisoformat(r["at"]).date()).days
-        out.append(("weekly model review", OK if age <= 9 else WARN,
+        out.append(("model review", OK if age <= 9 else WARN,
                     f"{r['at'][:10]} ({age}d ago), {'promoted' if r['promoted'] else 'kept previous'}"))
     else:
         out.append(("weekly model review", WARN, "never run (python scripts/learn.py)"))

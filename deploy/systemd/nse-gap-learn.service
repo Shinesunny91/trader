@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/trading-workspace
-ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/learn.py --push
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/learn.py --if-needed --push
 TimeoutStartSec=5400
 Nice=10
 MemoryMax=10G

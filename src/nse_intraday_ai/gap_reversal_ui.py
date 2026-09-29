@@ -82,13 +82,22 @@ def _render_picks() -> None:
         c = st.columns(3)
         who = payload.get("ranked_by", "rule")
         guard_t = payload.get("guard_t")
-        c[0].metric("Ranked by", "trained model" if who == "ranker" else "gap rule",
+        label = {"ranker_open": "open model (09:09)", "ranker": "morning model (08:45)"}.get(who, "gap rule")
+        c[0].metric("Ranked by", label,
                     f"guard t {guard_t:+.1f}" if guard_t is not None else None,
                     help="The model ranks unless its last 60 sessions were significantly worse "
                          "than the gap rule's (t < -2); then the rule takes over automatically.")
         model = payload.get("model") or {}
         c[1].metric("Model trained through", model.get("trained_through") or "—")
         c[2].metric("Data", payload.get("source", "yahoo-rule"))
+        if payload.get("final_at"):
+            prelim = [s.removesuffix(".NS") for s in payload.get("preliminary", [])]
+            st.success(f"**Final list** (re-ranked {payload['final_at'][11:16]} on today's opening "
+                       f"prices from {payload.get('auctions', '?')} auctions) — enter with MIS market "
+                       f"SELL at 09:15. The 08:45 list was: {', '.join(prelim)}.")
+        elif session == now.date().isoformat() and now.strftime("%H:%M") < "09:09":
+            st.info("Preliminary list. At 09:09 it is re-ranked on the pre-open auction's opening "
+                    "prices (if the open model is promoted) and pushed as the final list.")
         table = _picks_table(payload)
         st.dataframe(table, hide_index=True, width="stretch")
 
@@ -158,11 +167,18 @@ def _render_learning() -> None:
         st.info("No weekly review yet (`python scripts/learn.py`, or the nse-gap-learn timer).")
     else:
         r, b, v = report["ranker"], report["rule"], report["vs_rule"]
+        o, vo = report.get("ranker_open", {}), report.get("open_vs_ranker", {})
+        verdicts = report.get("verdicts", {"ranker": {"promoted": report.get("promoted")}})
         c = st.columns(4)
-        c[0].metric("Verdict", "promoted" if report["promoted"] else "kept previous")
-        c[1].metric("Ranker, net/trade", f"{r.get('net_bps_per_trade', 0):+.1f} bps", f"t {r.get('t_stat')}")
-        c[2].metric("Gap rule, net/trade", f"{b.get('net_bps_per_trade', 0):+.1f} bps", f"t {b.get('t_stat')}")
-        c[3].metric("Ranker − rule", f"{v['mean_diff_bps']:+.1f} bps/day", f"t {v['t_stat']}")
+        c[0].metric("Gap rule, net/trade", f"{b.get('net_bps_per_trade', 0):+.1f} bps", f"t {b.get('t_stat')}")
+        c[1].metric("08:45 model", f"{r.get('net_bps_per_trade', 0):+.1f} bps",
+                    "promoted" if verdicts.get("ranker", {}).get("promoted") else "not promoted")
+        c[2].metric("09:09 open model", f"{o.get('net_bps_per_trade', 0):+.1f} bps" if o else "—",
+                    "promoted" if verdicts.get("ranker_open", {}).get("promoted") else "not promoted")
+        c[3].metric("Model − rule", f"{v['mean_diff_bps']:+.1f} bps/day", f"t {v['t_stat']}")
+        if vo:
+            st.caption(f"Open model − morning model: {vo['mean_diff_bps']:+.1f} bps/day (t {vo['t_stat']}), "
+                       "net of 5 bps extra for entering at 09:15 instead of in the auction.")
         st.caption(f"Window {report['window'][0]} → {report['window'][1]} · challenger "
                    f"{report['challenger']} · reviewed {report['at'][:16]}")
     st.markdown("**Daily expert weights** (Hedge, learned from each morning's realised results)")

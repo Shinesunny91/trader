@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal final list, right after the pre-open auction (09:08)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:09:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

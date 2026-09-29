@@ -164,3 +164,36 @@ def test_fo_aggregate_uses_all_expiries_and_near_month_price():
     a = nse_fo.aggregate(rows).set_index("symbol").loc["ABC"]
     assert a["fut_close"] == 101.0 and a["fut_oi_all"] == 1200 and a["fut_chg_oi_all"] == 150
     assert a["call_oi"] == 500 and a["put_oi"] == 800 and a["fno"] == 1.0 and a["kind"] == "STOCK"
+
+
+def test_open_features_live_equal_research_and_stay_out_of_the_morning_build():
+    bhav = _bhav()
+    sessions = sorted(bhav["session"].unique())
+    target = sessions[70]
+    full = FT.build(_inputs(bhav), universe=10, min_price=1.0, with_open=True)
+    today = bhav[bhav["session"] == target].set_index("symbol")
+    opens = today[["open", "prev_close"]]
+    live = FT.build(_inputs(bhav[bhav["session"] < target]), universe=10, min_price=1.0,
+                    live_session=target, with_open=True, opens=opens)
+    a = full.xs(target, level="session").sort_index()
+    b = live.xs(target, level="session").sort_index()
+    cols = [c for c in FT.OPEN_FEATURES if c in b.columns]
+    assert "gap0" in cols and len(cols) >= 9
+    np.testing.assert_allclose(a[cols].to_numpy(float), b[cols].to_numpy(float), rtol=1e-5,
+                               atol=1e-6, equal_nan=True)
+    morning = FT.build(_inputs(bhav[bhav["session"] < target]), universe=10, min_price=1.0,
+                       live_session=target)
+    assert not set(FT.OPEN_FEATURES) & set(morning.columns), "08:45 rows must not know the open"
+
+
+def test_new_anomaly_features_are_causal():
+    bhav = _bhav()
+    sessions = sorted(bhav["session"].unique())
+    target = sessions[75]
+    full = FT.build(_inputs(bhav), universe=10, min_price=1.0)
+    live = FT.build(_inputs(bhav[bhav["session"] < target]), universe=10, min_price=1.0,
+                    live_session=target)
+    cols = ["tug5", "tug60", "ivol20", "skew20", "max21", "amihud20", "res_ret1", "res_ret5", "gap_streak"]
+    a = full.xs(target, level="session").sort_index()[cols]
+    b = live.xs(target, level="session").sort_index()[cols]
+    np.testing.assert_allclose(a.to_numpy(float), b.to_numpy(float), rtol=1e-5, atol=1e-6, equal_nan=True)
