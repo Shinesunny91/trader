@@ -1,7 +1,7 @@
 [project]
 name = "nse-intraday-ai"
 version = "0.1.0"
-description = "Local NSE intraday signal research and paper-trading workspace"
+description = "NSE intraday research and paper-trading workspace (gap-reversal book + research scanner)"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
@@ -9,6 +9,8 @@ dependencies = [
     "plotly>=5.18",
     "python-dotenv>=1.0",
     "requests>=2.31",
+    "scikit-learn>=1.3",
+    "scipy>=1.10",
     "streamlit>=1.35",
     "yfinance>=0.2.40",
 ]

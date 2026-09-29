@@ -1,60 +1,42 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
 *.egg-info/
-*.egg
+.pytest_cache/
 dist/
 build/
 
 # Virtual envs
 .venv*/
 venv/
-env/
 
-# IDE
+# IDE / OS
 .idea/
 .vscode/
+.DS_Store
 
-# Data - large files (kept locally, regenerated on cloud)
-data/*.sqlite3
-data/*.parquet
-data/*.pkl
-data/*.log
-data/*.log.*
-data/*.gz
-data/*.csv
-data/nse_flows/
-data/notifications_paused
-
-# Keep essential small config/model JSON files
+# ── data/ ──────────────────────────────────────────────────────────────────
+# Caches, logs, runtime state and model artefacts stay local (regenerable or
+# machine-specific). A few small files are versioned below.
+data/*
 !data/scan_config.json
 !data/signal_model.json
-
-# Keep symbol cache CSVs (NSE blocks non-Indian IPs on cloud)
+# Symbol lists: NSE blocks non-Indian IPs, so cloud deploys need these copies.
 !data/nifty50_symbols.csv
 !data/nifty100_symbols.csv
+!data/nifty500_symbols.csv
 
-# Android build artifacts
-*.apk
-*.idsig
-android-app/
+# ── android/ ───────────────────────────────────────────────────────────────
+# Source is versioned; the bootstrapped toolchain and build outputs are not.
+android/.android-sdk/
+android/.jdk/
+android/.gradle*/
+android/.downloads/
+android/manual-build/
+android/local.properties
+android/debug.keystore
+android/*.apk
+android/*.idsig
 
 # Tunnels
-bin/
 /tmp/cloudflared
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Backup files
-*.bak-*
-data/*.jsonl
-data/daemon_state.json
-data/scan_state.json
-data/today_*.json
-data/swing_tickets.json
-data/meta_model_commodity.json

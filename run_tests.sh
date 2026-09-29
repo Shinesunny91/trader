@@ -21,7 +21,7 @@ PY
 if [ "$missing_deps" -ne 0 ]; then
   echo "Test dependencies are missing from .venv."
   echo "When internet works, run:"
-  echo "  cd /home/hp/Documents/hobby/trading-workspace"
+  echo "  cd $PWD"
   echo "  source .venv/bin/activate"
   echo "  python -m pip install -e '.[dev]'"
   exit 1
