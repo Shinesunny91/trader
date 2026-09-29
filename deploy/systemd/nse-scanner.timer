@@ -1,0 +1,9 @@
+[Unit]
+Description=Scan every minute
+
+[Timer]
+OnCalendar=*:*:15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

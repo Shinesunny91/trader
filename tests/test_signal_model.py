@@ -146,16 +146,3 @@ def test_expectancy_note_carries_the_caveat_with_the_number():
     assert "+7.36%" in note and "34 held-out sessions" in note
     assert "spans zero" in note, "the interval caveat must travel with the number"
     assert "not a profit forecast" in note
-
-
-# ── the live-path contract that actually broke ────────────────────────────────
-
-def test_dataset_builder_and_model_agree_on_the_feature_list():
-    """One feature contract, or the live path silently falls back."""
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    import build_dataset
-
-    source = Path(build_dataset.__file__).read_text()
-    # Every declared feature must be produced somewhere in the builder.
-    missing = [name for name in FEATURE_NAMES if f'"{name}"' not in source]
-    assert not missing, f"build_dataset.py does not emit: {missing}"

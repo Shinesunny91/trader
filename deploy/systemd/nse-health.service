@@ -1,0 +1,9 @@
+[Unit]
+Description=Health check
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/health_check.py --quiet
+TimeoutStartSec=300

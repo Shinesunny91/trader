@@ -4,9 +4,9 @@ Written after 2026-08-14, when three failures had been running silently:
 
   * the Streamlit process had leaked to 15.2 GB over 35 days, stopped answering
     HTTP, and filled swap;
-  * because swap was full, the paper book's 60-second run took over 5 minutes
-    and systemd killed it mid-flight every tick — a whole session recorded
-    nothing;
+  * because swap was full, the (since retired) paper book's run took over 5
+    minutes and systemd killed it mid-flight every tick — a whole session
+    recorded nothing;
   * the macro context symbols had gone stale in the candle cache, so the gate
     refused *every* signal for two sessions and the screen simply showed
     nothing, which looks identical to a quiet market.
@@ -35,11 +35,11 @@ OK, WARN, FAIL = "ok", "warn", "FAIL"
 UNITS = [
     "nse-signal-lab.service",
     "nse-scanner.timer",
-    "nse-paper-book.timer",
     "nse-context.timer",
-    "nse-learn.timer",
-    "nse-retrain.timer",
-    "nse-logrotate.timer",
+    "nse-health.timer",
+    "nse-gap-picks.timer",
+    "nse-gap-levels.timer",
+    "nse-gap-record.timer",
 ]
 
 
@@ -115,26 +115,37 @@ def market_is_open(now: datetime) -> bool:
     return now.weekday() < 5 and "09:15" <= now.strftime("%H:%M") <= "15:30"
 
 
-def check_record() -> list[tuple[str, str, str]]:
-    record = ROOT / "data" / "daily_sim.csv"
-    if not record.exists():
-        return [("paper-book record", FAIL, "data/daily_sim.csv missing")]
+def check_book(now: datetime) -> list[tuple[str, str, str]]:
+    """The validated book: is today's pick list out, and is the record current?"""
     import csv
+    import json
 
+    out = []
+    book = ROOT / "data" / "gap_reversal"
+    picks = book / "picks.json"
+    if not picks.exists():
+        out.append(("gap-reversal picks", FAIL, "data/gap_reversal/picks.json missing"))
+    else:
+        session = json.loads(picks.read_text()).get("session", "?")
+        # From 08:45 on a weekday the list must be for today.
+        due = now.weekday() < 5 and now.strftime("%H:%M") >= "08:50"
+        stale = due and now.strftime("%H:%M") <= "15:30" and session < now.date().isoformat()
+        out.append(("gap-reversal picks", FAIL if stale else OK, f"list for {session}"))
+
+    record = book / "paper_book.csv"
+    if not record.exists():
+        out.append(("gap-reversal paper book", WARN, "no session recorded yet"))
+        return out
     with record.open() as handle:
         rows = list(csv.DictReader(handle))
-    if not rows:
-        return [("paper-book record", WARN, "no sessions recorded")]
-    last = rows[-1]
-    today = datetime.now(tz=IST).date().isoformat()
-    weekday = datetime.now(tz=IST).weekday() < 5
-    status = OK if (last["date"] == today or not weekday) else FAIL
-    total = sum(float(r["net_pnl"]) for r in rows)
-    return [
-        ("paper-book record", status,
-         f"{len(rows)} sessions, latest {last['date']}"),
-        ("paper-book cumulative", OK, f"₹{total:+,.0f} over {len(rows)} sessions"),
-    ]
+    sessions = sorted({r["session"] for r in rows})
+    total = sum(float(r["net"]) for r in rows)
+    # Holidays make a missing day ambiguous, so a gap is a warning, not a failure.
+    expected = now.date() if now.weekday() < 5 and now.strftime("%H:%M") >= "15:45" else None
+    status = WARN if expected and sessions[-1] != expected.isoformat() else OK
+    out.append(("gap-reversal paper book", status,
+                f"{len(sessions)} sessions, latest {sessions[-1]}, ₹{total:+,.0f} cumulative"))
+    return out
 
 
 def check_disk() -> tuple[str, str, str]:
@@ -164,7 +175,7 @@ def main() -> int:
     checks += _freshness(["^NSEI", "^INDIAVIX", "USDINR=X", "CL=F"], "context", context_age)
     checks += _freshness(["RELIANCE.NS", "HDFCBANK.NS"], "candles",
                          30 if market_is_open(now) else 24 * 60)
-    checks += check_record()
+    checks += check_book(now)
 
     problems = [c for c in checks if c[1] != OK]
     width = max(len(name) for name, _, _ in checks)
@@ -182,7 +193,8 @@ def main() -> int:
     print(f"\n{len(problems)} problem(s). Common fixes:")
     print("  stale context  : systemctl --user start nse-context.service")
     print("  app not serving: systemctl --user restart nse-signal-lab.service")
-    print("  missing session: python scripts/sim_today.py --date YYYY-MM-DD")
+    print("  no pick list   : python scripts/gap_reversal.py picks")
+    print("  missing session: python scripts/gap_reversal.py record --date YYYY-MM-DD")
     return 1
 
 

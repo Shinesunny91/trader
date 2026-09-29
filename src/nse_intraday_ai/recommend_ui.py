@@ -33,7 +33,7 @@ from nse_intraday_ai.swing import SCORES, _position_size
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Measured by scripts/horizon_study.py and scripts/swing_backtest.py on 10 years
+# Measured by the horizon study and scripts/swing_backtest.py on 10 years
 # of daily bars with Groww costs. Keyed (universe, horizon).
 EVIDENCE: dict[tuple[str, str], tuple[str, str]] = {
     ("commodity", "intraweek"): (
@@ -58,14 +58,13 @@ EVIDENCE: dict[tuple[str, str], tuple[str, str]] = {
         "buy & hold over the same decade.",
     ),
     ("nse", "intraday"): (
-        "bad",
-        "No rule-based gate was profitable, and the +27.6 bps/trade model-ranked "
-        "book once reported here is RETRACTED — it was the best of four model "
-        "families picked on their own test sessions, and over 48 sessions all "
-        "four lose money on their top pick (rf, the one shipped, -20.5 bps). "
-        "The population has nothing to rank: gross edge +0.8 bps against a "
-        "10.1 bps round trip, and 0 of 41 features have a best decile that "
-        "clears cost out of sample.",
+        "good",
+        "The voting engine's 5-minute signals have no edge after costs (gross "
+        "+0.8 bps vs a ~10 bps round trip). What does work is a day-level trade: "
+        "the gap-reversal book — short yesterday's biggest gap-ups at the open, "
+        "cover at 15:15 — returned +24.7 bps/trade net over 10 years (t = 9.2, "
+        "every year positive) and +10.6% over the 14 held-out sessions to "
+        "2026-09-28. See 'Gap-reversal book (validated)' in the sidebar.",
     ),
     ("commodity", "intraday"): (
         "bad",
@@ -181,9 +180,9 @@ def render() -> None:
 
     if horizon.interval != "1d":
         st.info(
-            "The intraday book runs on 5-minute bars through the live scanner and "
-            "`sim_today.py`, not this daily panel. Use the scanner modes in the "
-            "sidebar for it; the measured result is shown above."
+            "The validated intraday trade is the gap-reversal book — open "
+            "'Gap-reversal book (validated)' in the sidebar for today's picks, "
+            "the backtest and the paper record."
         )
         return
 
@@ -202,8 +201,8 @@ def render() -> None:
                          disabled=not diversify)
 
     if not st.button("Find candidates", type="primary"):
-        st.info(f"Reproduce every number: `python scripts/horizon_study.py "
-                f"--universe {universe} --horizon {horizon_key} --model`")
+        st.info("These figures come from the ten-year horizon study (see "
+                "docs/research-log.md; the script is in git history).")
         return
 
     with st.spinner("Loading 10 years of daily bars..."):

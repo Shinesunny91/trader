@@ -12,8 +12,8 @@ There is no authentication: run it on a home network, not a public one.
 
 Endpoints
     /health   process + data freshness
-    /tickets  data/today_tickets.json as-is
-    /record   the accumulated daily_sim.csv track record as JSON
+    /tickets  today's gap-reversal shorts (data/gap_reversal/picks.json)
+    /record   the gap-reversal paper book, per session, as JSON
 """
 from __future__ import annotations
 
@@ -31,51 +31,74 @@ DATA = ROOT / "data"
 IST = ZoneInfo("Asia/Kolkata")
 
 
+BOOK = DATA / "gap_reversal"
+
+
+def _age(path: Path) -> int:
+    return round(datetime.now(timezone.utc).timestamp() - path.stat().st_mtime)
+
+
 def _payload_tickets() -> dict:
-    path = DATA / "today_tickets.json"
+    """Today's gap-reversal shorts, in the shape the Android poller expects."""
+    path = BOOK / "picks.json"
     if not path.exists():
-        return {"error": "no ticket file yet", "tickets": []}
+        return {"error": "no pick list yet", "tickets": [], "ticket_ids": [], "ticket_count": 0}
     body = json.loads(path.read_text())
-    body["file_age_seconds"] = round(
-        datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
-    )
-    # A stable identity for "have I already told the user about this?".
-    ids = [f"{t.get('symbol')}|{t.get('side')}|{t.get('signal_time')}"
-           for t in body.get("tickets", [])]
-    body["ticket_ids"] = ids
-    body["ticket_count"] = len(ids)
-    return body
+    square_off = body.get("config", {}).get("square_off", "15:15")
+    tickets = []
+    for p in body.get("picks", []):
+        if p.get("reserve"):
+            continue
+        stop = (f"BUY SL-M ₹{p['stop_price']:,.2f}" if p.get("stop_price")
+                else f"BUY SL-M at fill + ₹{p['stop_distance']:,.2f}")
+        tickets.append({
+            "symbol": p["symbol"], "side": p["side"], "quantity": p["quantity"],
+            "ticket": f"SELL SHORT {p['quantity']} {p['symbol']} (MIS) at the open | {stop} | "
+                      f"cover at {square_off}",
+            **p,
+        })
+    ids = [f"gap|{body.get('session')}|{t['symbol']}" for t in tickets]
+    return {
+        "session": body.get("session"),
+        "generated_at": body.get("generated_at"),
+        "status": f"{len(tickets)} gap-reversal shorts for {body.get('session')}: enter at the "
+                  f"open, stop as shown, cover at {square_off}",
+        "tickets": tickets, "ticket_ids": ids, "ticket_count": len(ids),
+        "reserves": [p["symbol"] for p in body.get("picks", []) if p.get("reserve")],
+        "file_age_seconds": _age(path),
+    }
+
+
+def _book_sessions() -> list[dict]:
+    path = BOOK / "paper_book.csv"
+    if not path.exists():
+        return []
+    with path.open() as fh:
+        rows = list(csv.DictReader(fh))
+    per: dict[str, dict] = {}
+    for r in rows:
+        day = per.setdefault(r["session"], {"date": r["session"], "trades": 0, "net_pnl": 0.0})
+        day["trades"] += 1
+        day["net_pnl"] = round(day["net_pnl"] + float(r["net"]), 2)
+    sessions, cum = [], 0.0
+    for day in sorted(per):
+        cum += per[day]["net_pnl"]
+        sessions.append({**per[day], "cumulative_net": round(cum, 2)})
+    return sessions
 
 
 def _payload_record() -> dict:
-    path = DATA / "daily_sim.csv"
-    if not path.exists():
-        return {"sessions": []}
-    with path.open() as fh:
-        rows = list(csv.DictReader(fh))
-    for r in rows:
-        for k in ("gross_pnl", "costs", "net_pnl", "net_pct"):
-            if k in r:
-                try:
-                    r[k] = float(r[k])
-                except (TypeError, ValueError):
-                    pass
-    cum = 0.0
-    for r in rows:
-        cum += float(r.get("net_pnl") or 0)
-        r["cumulative_net"] = round(cum, 2)
-    return {"sessions": rows, "session_count": len(rows), "cumulative_net": round(cum, 2)}
+    sessions = _book_sessions()
+    return {"sessions": sessions, "session_count": len(sessions),
+            "cumulative_net": sessions[-1]["cumulative_net"] if sessions else 0.0}
 
 
 def _payload_health() -> dict:
     now = datetime.now(IST)
     files = {}
-    for name in ("today_tickets.json", "daily_sim.csv", "scan_state.json"):
+    for name in ("gap_reversal/picks.json", "gap_reversal/paper_book.csv", "scan_state.json"):
         p = DATA / name
-        files[name] = {
-            "exists": p.exists(),
-            "age_seconds": round(now.timestamp() - p.stat().st_mtime) if p.exists() else None,
-        }
+        files[name] = {"exists": p.exists(), "age_seconds": _age(p) if p.exists() else None}
     return {"ok": True, "now_ist": now.isoformat(timespec="seconds"), "files": files}
 
 
@@ -96,47 +119,15 @@ def _payload_swing() -> dict:
     return body
 
 
-def _payload_signals() -> dict:
-    """Live ranked signals with model predictions and cross-sectional rankings."""
-    path = DATA / "today_signals.json"
-    if not path.exists():
-        return {"error": "no signals file yet", "signals": []}
-    try:
-        body = json.loads(path.read_text())
-        body["file_age_seconds"] = round(
-            datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
-        )
-        return body
-    except Exception as exc:
-        return {"error": str(exc), "signals": []}
-
-
 def _payload_portfolio() -> dict:
-    """Current paper portfolio metrics, open positions, and account summary."""
-    trades_path = DATA / "daily_sim.csv"
-    tickets_path = DATA / "today_tickets.json"
-    trades_count = 0
-    net_pnl = 0.0
-    if trades_path.exists():
-        try:
-            with trades_path.open() as fh:
-                rows = list(csv.DictReader(fh))
-                trades_count = len(rows)
-                net_pnl = sum(float(r.get("net_pnl", 0.0) or 0.0) for r in rows)
-        except Exception:
-            pass
-    active_count = 0
-    if tickets_path.exists():
-        try:
-            t_data = json.loads(tickets_path.read_text())
-            active_count = len(t_data.get("tickets", []))
-        except Exception:
-            pass
+    """The gap-reversal paper book at a glance."""
+    sessions = _book_sessions()
+    tickets = _payload_tickets()
     return {
         "status": "active",
-        "total_sessions": trades_count,
-        "cumulative_net_pnl": round(net_pnl, 2),
-        "active_today_tickets": active_count,
+        "total_sessions": len(sessions),
+        "cumulative_net_pnl": sessions[-1]["cumulative_net"] if sessions else 0.0,
+        "active_today_tickets": tickets.get("ticket_count", 0),
         "now_ist": datetime.now(IST).isoformat(timespec="seconds"),
     }
 
@@ -162,7 +153,6 @@ def _payload_macro() -> dict:
 
 ROUTES = {
     "/tickets": _payload_tickets,
-    "/signals": _payload_signals,
     "/portfolio": _payload_portfolio,
     "/macro": _payload_macro,
     "/swing": _payload_swing,

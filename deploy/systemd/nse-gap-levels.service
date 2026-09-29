@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal book: push stop-loss prices from the opening prints
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/gap_reversal.py levels --push
+TimeoutStartSec=300

@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal paper record, weekdays after the close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

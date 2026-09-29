@@ -1,0 +1,9 @@
+[Unit]
+Description=Backfill macro/context symbols
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/backfill_context.py
+TimeoutStartSec=900

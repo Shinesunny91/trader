@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal picks, weekdays before the pre-open
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:45:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

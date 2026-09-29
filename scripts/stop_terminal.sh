@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+# Stop the app and every scheduled job. `./scripts/start_terminal.sh` undoes it.
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-# 1. Stop systemd services and timers
+TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-levels nse-gap-record)
+
 systemctl --user stop nse-signal-lab.service 2>/dev/null || true
-systemctl --user stop nse-scanner.timer nse-paper-book.timer nse-candidate-paper.timer nse-context.timer nse-health.timer 2>/dev/null || true
+for t in "${TIMERS[@]}"; do systemctl --user stop "$t.timer" 2>/dev/null || true; done
+pkill -f "$PWD.*(streamlit|scanner_daemon|gap_reversal)" 2>/dev/null || true
 
-# 2. Kill any lingering process from trading-workspace
-pkill -f "/home/shine/trading-workspace.*(streamlit|scanner_daemon)" 2>/dev/null || true
-
-# 3. Send desktop notification
-notify-send "NSE Quant Terminal" "🛑 Trading Terminal and all background scanners have been STOPPED." --icon=process-stop 2>/dev/null || true
+notify-send "NSE Intraday Signal Lab" "App and all scheduled jobs STOPPED." --icon=process-stop 2>/dev/null || true

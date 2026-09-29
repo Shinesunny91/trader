@@ -1,0 +1,15 @@
+[Unit]
+Description=NSE Signal Lab (Streamlit)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python -m streamlit run %h/trading-workspace/src/nse_intraday_ai/app.py --server.address 0.0.0.0 --server.port 8501 --server.headless true --server.fileWatcherType none
+Restart=always
+RestartSec=5
+# Guards added after the app leaked to 15 GB over 35 days (2026-08-14).
+MemoryMax=5G
+RuntimeMaxSec=86400
+
+[Install]
+WantedBy=default.target

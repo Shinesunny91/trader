@@ -1,0 +1,9 @@
+[Unit]
+Description=Macro context every 10 minutes, 08:00-16:00
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08..16:00/10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

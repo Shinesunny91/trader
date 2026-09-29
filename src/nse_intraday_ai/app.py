@@ -130,7 +130,9 @@ def _send_new_signal_notifications(recommendations: list) -> None:
         _DAEMON_STATE_PATH.write_text(json.dumps(state, indent=2))
 
 
-st.set_page_config(page_title="NSE & Commodity Intraday Signal Lab", page_icon="INR", layout="wide")
+st.set_page_config(page_title="NSE Intraday Signal Lab", page_icon="INR", layout="wide")
+
+GAP_MODE = "Gap-reversal book (validated)"
 
 
 @st.cache_data(ttl=3600)
@@ -654,127 +656,20 @@ def _recommendations_frame(
 
 
 def _render_execution_tickets(recommendations: list[ScanResult], risk_config: RiskConfig) -> None:
-    """The actionable panel: exactly the trade the 49-session study measured.
+    """Point the scanner's reader at the one trade that has passed a held-out test.
 
-    The recommendation table below this shows the raw engine plan, whose entry
-    is the signal bar's close (unattainable) and whose stop/target come from
-    each strategy's own levels rather than the validated 1.5/3.0 ATR design.
-    Trading that table while believing the simulation means trading a setup
-    that was never tested, so the tradeable version gets top billing and the
-    raw one is labelled as reference.
+    This panel used to build order tickets from the voting engine and push them
+    to the phone on every render.  The engine's signals have no edge after
+    costs (the model-ranked book lost 0.3% over 2026-09-08..09-28 while the
+    gap-reversal book made 10.6%), so pushing them as trade alerts was the
+    opposite of what the phone channel is for.
     """
-    import json
-    from datetime import datetime
-
-    from nse_intraday_ai.execution_plan import (
-        MAX_TRADES_PER_DAY,
-        build_execution_plan,
-        expectancy_note,
+    st.info(
+        "**Research view — not trade recommendations.** The voting engine below "
+        "lost money after costs in every out-of-sample test, including the last "
+        "14 sessions. For validated trades use **Gap-reversal book (validated)** "
+        "in the sidebar; its picks are the only thing pushed to your phone."
     )
-
-    st.subheader("Order Tickets — the validated trade")
-
-    # Prefer tickets published by the daily book (scripts/sim_today.py). That
-    # script *is* the validated path — same ranking model, same portfolio
-    # rules — so reading its output keeps the screen and the measured book from
-    # drifting apart, which is exactly how the 2026-07-07 config incident
-    # happened. Fall back to building tickets inline only if it has not run for
-    # this session.
-    published = ROOT / "data" / "today_tickets.json"
-    payload = None
-    if published.exists():
-        try:
-            candidate = json.loads(published.read_text())
-            if candidate.get("session") == datetime.now(_IST).date().isoformat():
-                payload = candidate
-        except Exception:
-            payload = None
-
-    if payload is not None:
-        st.warning(payload.get("expectancy", expectancy_note()))
-        cap = payload.get("daily_cap", MAX_TRADES_PER_DAY)
-        c1, c2, c3 = st.columns(3)
-        c1.metric(
-            "Trades taken today",
-            f"{payload.get('trades_taken', 0)}" + ("" if cap <= 0 else f" / {cap}"),
-            help="No daily cap is set — the book is bounded by concurrency and capital."
-            if cap <= 0 else None,
-        )
-        c2.metric("Open slots", str(payload.get("slots_remaining", 0)))
-        c3.metric("Session P&L", f"₹{payload.get('session_pnl', 0):+,.0f}")
-        if cap <= 0:
-            st.error(
-                "**Daily trade cap is OFF.** Measured over 34 held-out sessions on the "
-                "same signals: capping at 3 trades/day returned +5.22%; uncapped "
-                "returned −13.53% on 897 positions instead of 102. Gross edge falls "
-                "23.0 → 3.3 bps because the extra trades are lower-ranked, while each "
-                "still pays its full ~8 bps round trip. Restore the cap by setting "
-                "`MAX_TRADES_PER_DAY = 1` in `src/nse_intraday_ai/execution_plan.py` "
-                "— 1 is the validated setting since 2026-08-17, not 3."
-            )
-        st.caption(
-            f"Published {payload.get('generated_at', '?')} — refreshes every 5 minutes "
-            f"while the market is open. {payload.get('gated_signals', 0):,} signals "
-            f"ranked today (the book takes the best one; filtering before ranking was "
-            f"measured worse). Capital ₹{payload.get('capital', 0):,.0f}."
-        )
-        if not payload.get("tickets"):
-            st.info(payload.get("status", "No tradable ticket right now."))
-        else:
-            st.success(payload.get("status", ""))
-        for entry in payload["tickets"]:
-            st.code(entry["ticket"], language="text")
-            st.caption(
-                f"signal fired {entry.get('age_minutes', 0):.0f} min ago "
-                f"({entry.get('signal_time', '')[11:16]}), ranked by "
-                f"{entry.get('ranked_by', '?')}"
-            )
-        return
-
-    st.warning(expectancy_note())
-    st.caption(
-        "Built inline from the live scan — the daily book has not published "
-        "tickets for this session yet (`python scripts/sim_today.py`)."
-    )
-    if not recommendations:
-        st.info("No ranked signal is fresh enough to act on. A flat book is a position.")
-        return
-
-    st.caption(
-        f"Capital ₹{risk_config.capital:,.0f} from the sidebar. The study capped the "
-        f"book at {MAX_TRADES_PER_DAY} trades a day — taking more was measurably "
-        f"worse, not better — so only the top {MAX_TRADES_PER_DAY} are ticketed."
-    )
-    for index, result in enumerate(recommendations[:MAX_TRADES_PER_DAY]):
-        plan = result.plan
-        atr = None
-        if result.frame is not None and not result.frame.empty and "atr_14" in result.frame:
-            atr = float(result.frame["atr_14"].iloc[-1])
-        ticket = build_execution_plan(
-            symbol=result.symbol,
-            side=plan.side.value,
-            signal_price=float(plan.entry or result.last_close or 0.0),
-            atr=atr or 0.0,
-            capital=risk_config.capital,
-            taken_today=index,
-            predicted_net_bps=result.predicted_net_bps,
-            model_rank=result.model_rank or (index + 1),
-        )
-        st.code(ticket.order_ticket(), language="text")
-        from nse_intraday_ai.alerts import (
-            send_all_channels, NTFY_TOPIC,
-        )
-        # Auto-push to phone via ntfy.sh (zero config, works instantly)
-        _push_key = f"_ntfy_auto_{result.symbol}_{index}"
-        if _push_key not in st.session_state:
-            results = send_all_channels(ticket.order_ticket())
-            st.session_state[_push_key] = results
-            if results.get("ntfy"):
-                st.success(f"📱 Alert pushed to your phone! (ntfy topic: `{NTFY_TOPIC}`)")
-        import urllib.parse
-        wa_text = f"🚨 NSE TRADE TICKET\n{ticket.order_ticket()}"
-        wa_url = f"https://api.whatsapp.com/send?phone=918123157952&text={urllib.parse.quote(wa_text)}"
-        st.markdown(f'<a href="{wa_url}" target="_blank" style="display:inline-block;padding:6px 12px;background-color:#25D366;color:white;text-decoration:none;border-radius:6px;font-size:0.85em;margin-bottom:8px;">📲 Share via WhatsApp</a>', unsafe_allow_html=True)
 
 
 def _near_misses_frame(
@@ -1102,7 +997,7 @@ def _render_scanner(
     if cycle.meta_vetoed:
         st.caption(
             f"Meta-label veto dropped {len(cycle.meta_vetoed)} signal(s) scoring below "
-            "the trained cut (evidence-gated model, scripts/train_meta_model.py)."
+            "the trained cut (evidence-gated model trained in July 2026)."
         )
     if cycle.stale_signals:
         st.caption(
@@ -1517,11 +1412,6 @@ def _render_recommend_workbench() -> None:
     recommend_ui.render()
 
 
-def _render_candidate_paper() -> None:
-    from nse_intraday_ai import candidate_ui
-    candidate_ui.render()
-
-
 @st.cache_data(ttl=900, show_spinner=False)
 def _swing_panel(universe: str):
     """Daily panel for the swing book. Cached: it reads ~1M rows."""
@@ -1622,37 +1512,37 @@ def _render_swing() -> None:
 
 
 def _render_market_phase_banner(now: pd.Timestamp) -> None:
-    """Institutional timing guide: alerts user to high-edge windows vs midday chop."""
+    """Where the validated book is in its day — the only schedule that was tested."""
+    if now.weekday() >= 5:
+        st.info("🌙 **Weekend.** Monday's gap-reversal picks arrive at 08:45 IST.")
+        return
     m = now.hour * 60 + now.minute
-    if m < 555:
-        st.info("🕒 **Pre-Market / Overnight Session**: NSE opens at 09:15 IST. Next trade window: **09:15 – 10:00 IST (Morning Opening Drive)**.")
-    elif m <= 600:
-        st.success("🟢 **Morning Opening Drive (09:15 – 10:00 IST)**: High-Conviction Momentum Window. Focus on ORB and Gap Expansions.")
-    elif m < 795:
-        remaining_m = 795 - m
-        hrs, mins = divmod(remaining_m, 60)
-        time_str = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
-        st.warning(
-            f"🟡 **Midday Chop & Consolidation (10:00 – 13:15 IST)**: Historically negative edge zone. "
-            f"**DO NOT TAKE NEW TRADES** — protect morning gains. Next high-edge window: **13:15 IST** (in {time_str}, European open)."
-        )
-    elif m <= 870:
-        st.success("🟢 **Afternoon Trend Resumption (13:15 – 14:30 IST)**: European Open & Directional Expansion. Optimal window for second trade.")
-    elif m <= 915:
-        st.warning("🟠 **Late Afternoon Positioning (14:30 – 15:15 IST)**: Tighten trailing stops. No new long-duration entries.")
+    if m < 540:
+        st.info("🕒 **Before the open.** Today's gap-reversal picks arrive at 08:45; "
+                "place the shorts in the **09:00–09:07 pre-open** auction.")
+    elif m < 555:
+        st.success("🟢 **Pre-open (09:00–09:08).** Place the MIS short orders now — the open "
+                   "is the entry the backtest measured; waiting for the first candle halves the edge.")
+    elif m < 570:
+        st.warning("🛑 **Market open.** Place a BUY SL-M for each short at your fill + the stop "
+                   "distance (stop levels are pushed at ~09:18).")
+    elif m < 915:
+        st.info("⏳ **Holding.** Nothing to do until 15:15 unless a stop fills. "
+                "No new entries — the book trades once a day, at the open.")
     elif m <= 930:
-        st.error("🔴 **Intraday Square-Off Window (15:15 – 15:30 IST)**: Close all intraday MIS positions before broker auto-square-off.")
+        st.error("🔴 **15:15 — cover all gap-reversal shorts now** (MIS auto square-off at ~15:20).")
     else:
-        st.info("🌙 **Market Closed**: NSE regular trading hours end at 15:30 IST. Review session logs & paper book.")
+        st.info("🌙 **Market closed.** The paper result is recorded at 15:40; "
+                "tomorrow's picks arrive at 08:45.")
 
 
 def main() -> None:
-    st.title("NSE & Commodity Intraday Signal Lab")
+    st.title("NSE Intraday Signal Lab")
     st.caption(
         "Research and paper-trading tool. It is not a profit guarantee or personal financial advice. "
         "Use broker/licensed feeds before any real-money workflow."
     )
-    _render_market_phase_banner(pd.Timestamp.now(tz=IST))
+    _render_market_phase_banner(pd.Timestamp.now(tz=_IST))
 
     with st.sidebar:
         # ── Daemon notification toggle ────────────────────────────────────────
@@ -1687,7 +1577,11 @@ def main() -> None:
                 f"2. Open the app → tap **+** → subscribe to:\n"
             )
             st.code(NTFY_TOPIC, language=None)
-            st.markdown("3. **Done!** Every trade alert is auto-pushed to your phone. ✅")
+            st.markdown(
+                "3. **Done!** You get the gap-reversal book on your phone: the picks at "
+                "08:45, stop levels at ~09:18 and the day's result at 15:40. ✅\n\n"
+                "Scanner signals are *not* pushed — they have no measured edge."
+            )
             if st.button("🧪 Send Test Push", key="ntfy_test_btn"):
                 ok = send_ntfy(
                     "🧪 Test from NSE Quant Terminal\n\nPush notifications working! ✅",
@@ -1743,10 +1637,21 @@ def main() -> None:
         st.header("Market")
         workspace_mode = st.radio(
             "Mode",
-            ["NIFTY 50 scanner", "NIFTY 100 scanner", "NIFTY 500 scanner", "Commodity scanner",
-             "Recommendation workbench", "Candidate paper track", "Intra-week book", "Backtest", "Single symbol"],
+            [GAP_MODE, "NIFTY 50 scanner", "NIFTY 100 scanner", "NIFTY 500 scanner",
+             "Commodity scanner", "Recommendation workbench", "Intra-week book", "Backtest",
+             "Single symbol"],
             index=0,
+            help="Only the gap-reversal book has passed an out-of-sample test. The scanners "
+                 "are research views of the voting engine, which lost money after costs.",
         )
+
+    if workspace_mode == GAP_MODE:
+        from nse_intraday_ai import gap_reversal_ui
+
+        gap_reversal_ui.render()
+        return
+
+    with st.sidebar:
         scanner_mode = workspace_mode in {"NIFTY 500 scanner", "NIFTY 100 scanner", "NIFTY 50 scanner", "Commodity scanner"}
         commodity_mode = workspace_mode == "Commodity scanner"
         data_mode = st.radio("Data source", ["Yahoo Finance", "Demo"], horizontal=True)
@@ -1936,8 +1841,8 @@ def main() -> None:
         commodity_defaults = commodity_mode or (
             workspace_mode == "Backtest" and backtest_universe_label == "Commodities"
         )
-        # Defaults match the validated portfolio configuration (execution_plan.py
-        # / sim_today.py): ₹10L, 1% risk, 33% max position.  They used to be
+        # Defaults match the portfolio configuration in execution_plan.py:
+        # ₹10L, 1% risk, 33% max position.  They used to be
         # ₹1L / 0.5% / 25%, which silently sized every order ticket for a
         # tenth of the account being traded.
         capital = st.number_input(
@@ -2142,9 +2047,6 @@ def main() -> None:
         elif workspace_mode == "Recommendation workbench":
             latest_prices = {}
             _render_recommend_workbench()
-        elif workspace_mode == "Candidate paper track":
-            latest_prices = {}
-            _render_candidate_paper()
         elif workspace_mode == "Intra-week book":
             latest_prices = {}
             _render_swing()

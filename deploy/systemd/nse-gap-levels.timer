@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal stop levels, just after the open
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:18:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

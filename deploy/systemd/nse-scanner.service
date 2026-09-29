@@ -1,0 +1,9 @@
+[Unit]
+Description=Voting-engine scan cycle (research view, desktop alerts only)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/scanner_daemon.py
+TimeoutStartSec=600
