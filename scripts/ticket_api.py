@@ -51,9 +51,11 @@ def _payload_tickets() -> dict:
             continue
         stop = (f"BUY SL-M ₹{p['stop_price']:,.2f}" if p.get("stop_price")
                 else f"BUY SL-M at fill + ₹{p['stop_distance']:,.2f}")
+        entry = (f"SELL LIMIT ₹{p['limit_price']:,.2f} in pre-open (cancel if unfilled at 09:15)"
+                 if p.get("limit_price") else "at the open")
         tickets.append({
             "symbol": p["symbol"], "side": p["side"], "quantity": p["quantity"],
-            "ticket": f"SELL SHORT {p['quantity']} {p['symbol']} (MIS) at the open | {stop} | "
+            "ticket": f"SELL SHORT {p['quantity']} {p['symbol']} (MIS) {entry} | {stop} | "
                       f"cover at {square_off}",
             **p,
         })
@@ -96,27 +98,11 @@ def _payload_record() -> dict:
 def _payload_health() -> dict:
     now = datetime.now(IST)
     files = {}
-    for name in ("gap_reversal/picks.json", "gap_reversal/paper_book.csv", "scan_state.json"):
+    for name in ("gap_reversal/picks.json", "gap_reversal/paper_book.csv",
+                 "models/champion.json"):
         p = DATA / name
         files[name] = {"exists": p.exists(), "age_seconds": _age(p) if p.exists() else None}
     return {"ok": True, "now_ist": now.isoformat(timespec="seconds"), "files": files}
-
-
-def _payload_swing() -> dict:
-    """Intra-week candidates, so the phone sees the same book the desktop does."""
-    path = DATA / "swing_tickets.json"
-    if not path.exists():
-        return {"error": "no swing picks yet — run scripts/swing_today.py", "tickets": []}
-    body = json.loads(path.read_text())
-    body["file_age_seconds"] = round(
-        datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
-    )
-    body["ticket_ids"] = [
-        f"swing|{t.get('symbol')}|{t.get('side')}|{body.get('data_through')}"
-        for t in body.get("tickets", [])
-    ]
-    body["ticket_count"] = len(body["ticket_ids"])
-    return body
 
 
 def _payload_portfolio() -> dict:
@@ -132,30 +118,9 @@ def _payload_portfolio() -> dict:
     }
 
 
-def _payload_macro() -> dict:
-    """Real-time macro status: NIFTY regime, India VIX, USDINR, Crude tailwinds."""
-    try:
-        from nse_intraday_ai.market_context import fetch_index_vix_context
-        ctx = fetch_index_vix_context()
-        return {
-            "nifty_regime": getattr(ctx, "index_regime", "UNKNOWN"),
-            "nifty_change_pct": getattr(ctx, "nifty_change_pct", 0.0),
-            "vix_value": getattr(ctx, "vix_value", None),
-            "vix_level": getattr(ctx, "vix_level", "NORMAL"),
-            "usdinr_change_pct": getattr(ctx, "usdinr_change_pct", None),
-            "crude_change_pct": getattr(ctx, "crude_change_pct", None),
-            "fetch_error": getattr(ctx, "fetch_error", None),
-            "now_ist": datetime.now(IST).isoformat(timespec="seconds"),
-        }
-    except Exception as exc:
-        return {"error": str(exc), "nifty_regime": "UNKNOWN"}
-
-
 ROUTES = {
     "/tickets": _payload_tickets,
     "/portfolio": _payload_portfolio,
-    "/macro": _payload_macro,
-    "/swing": _payload_swing,
     "/record": _payload_record,
     "/health": _payload_health,
 }

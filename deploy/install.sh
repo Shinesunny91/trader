@@ -5,9 +5,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/systemd"
 DEST="$HOME/.config/systemd/user"
-TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-final nse-gap-levels nse-gap-record nse-gap-learn)
+# Every *.timer in this directory is installed and enabled (single source of truth).
+TIMERS=($(ls ./*.timer | xargs -n1 basename | sed 's/\.timer$//'))
 # Units from earlier layouts that no longer exist in this repo.
-RETIRED=(nse-paper-book nse-candidate-paper nse-learn nse-retrain nse-logrotate)
+RETIRED=(nse-paper-book nse-candidate-paper nse-learn nse-retrain nse-logrotate nse-scanner nse-context)
 
 for name in "${RETIRED[@]}"; do
   systemctl --user disable --now "$name.timer" 2>/dev/null || true

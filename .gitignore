@@ -19,11 +19,7 @@ venv/
 # Caches, logs, runtime state and model artefacts stay local (regenerable or
 # machine-specific). A few small files are versioned below.
 data/*
-!data/scan_config.json
-!data/signal_model.json
-# Symbol lists: NSE blocks non-Indian IPs, so cloud deploys need these copies.
-!data/nifty50_symbols.csv
-!data/nifty100_symbols.csv
+# Universe + sectors: NSE blocks non-Indian IPs, so cloud deploys need a copy.
 !data/nifty500_symbols.csv
 
 # ── android/ ───────────────────────────────────────────────────────────────

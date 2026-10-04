@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -138,15 +138,6 @@ class CandleCache:
             df[col] = df[col].astype(float)
         return drop_synthetic_bars(df, interval)
 
-    def load_period(self, symbol: str, interval: str, period: str) -> pd.DataFrame:
-        """Load candles for the yfinance-style period string (e.g. '1d', '5d', '60d')."""
-        unit = period[-1]
-        n = int(period[:-1])
-        delta = {"d": timedelta(days=n), "w": timedelta(weeks=n),
-                 "m": timedelta(days=n * 30)}.get(unit, timedelta(days=n))
-        since = datetime.now(IST) - delta
-        return self.load(symbol, interval, since=since)
-
     def latest_ts(self, symbol: str, interval: str) -> datetime | None:
         """Timestamp of the most recent cached candle for symbol/interval."""
         with self._connect() as conn:
@@ -157,14 +148,6 @@ class CandleCache:
         if not row or not row[0]:
             return None
         return datetime.fromisoformat(row[0])
-
-    def symbol_count(self) -> int:
-        with self._connect() as conn:
-            return conn.execute("SELECT COUNT(DISTINCT symbol) FROM candles").fetchone()[0]
-
-    def candle_count(self) -> int:
-        with self._connect() as conn:
-            return conn.execute("SELECT COUNT(*) FROM candles").fetchone()[0]
 
     def stats(self) -> dict:
         with self._connect() as conn:

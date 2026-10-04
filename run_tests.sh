@@ -14,7 +14,7 @@ missing_deps=0
 python - <<'PY' || missing_deps=1
 import importlib
 
-for module in ("pytest", "streamlit", "pandas", "numpy", "yfinance", "requests", "plotly"):
+for module in ("pytest", "streamlit", "pandas", "numpy", "sklearn", "lightgbm", "pyarrow", "yfinance", "requests", "plotly"):
     importlib.import_module(module)
 PY
 
@@ -28,4 +28,4 @@ if [ "$missing_deps" -ne 0 ]; then
 fi
 
 export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
-exec pytest "$@"
+exec python -m pytest -q -W error "$@"   # zero-warnings gate

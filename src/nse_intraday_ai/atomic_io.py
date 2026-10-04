@@ -63,26 +63,3 @@ def atomic_read_json(path: Path | str, *, default: Any = None,
             if default is not None:
                 return default
             raise
-
-
-def sqlite_wal_connect(path: Path | str, **kwargs) -> "sqlite3.Connection":
-    """Open a SQLite database with WAL mode and safe concurrency defaults.
-
-    WAL (Write-Ahead Logging) allows readers and a single writer to operate
-    concurrently without blocking.  Essential when systemd timers, the
-    Streamlit app, and the scanner daemon all hit the same database.
-
-    Returns a connection with:
-    - journal_mode=WAL (concurrent readers + writer)
-    - busy_timeout=5000 (wait 5s instead of failing on lock)
-    - synchronous=NORMAL (safe with WAL, faster than FULL)
-    """
-    import sqlite3
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), **kwargs)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.row_factory = sqlite3.Row
-    return conn

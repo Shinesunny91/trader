@@ -1,8 +1,8 @@
 [Unit]
-Description=Gap-reversal final list, right after the pre-open auction (09:08)
+Description=Gap-reversal final list, right after the pre-open auction (entry closes 09:08-09:10, matched by 09:12)
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 09:09:00
+OnCalendar=Mon..Fri *-*-* 09:10:30
 Persistent=false
 
 [Install]

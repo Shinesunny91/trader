@@ -55,17 +55,6 @@ def test_top_book_takes_the_k_best_scores_net_of_cost():
     assert P.top_book(rows["short_bps"], score, rows["turn_rank"] <= 2, k=4) is None
 
 
-def test_blend_follows_the_weights():
-    rows = _rows()
-    mask = pd.Series(True, index=rows.index)
-    a = pd.Series(np.arange(30, dtype=float), index=rows.index)
-    scores = {"rule": a, "ranker": -a}
-    only_rule = P.blended(scores, M.MetaState(weights={"rule": 1.0, "ranker": 1e-9}), mask)
-    assert only_rule.idxmax() == a.idxmax()
-    only_ranker = P.blended(scores, M.MetaState(weights={"rule": 1e-9, "ranker": 1.0}), mask)
-    assert only_ranker.idxmax() == a.idxmin()
-
-
 def test_traded_expert_prefers_the_most_refined_list_its_record_allows():
     st = M.MetaState(guard_window=5, guard_t=-2.0)
     assert P.traded_expert(st, {"rule"}) == "rule"

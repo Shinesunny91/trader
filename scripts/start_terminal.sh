@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TIMERS=(nse-scanner nse-context nse-health nse-gap-picks nse-gap-final nse-gap-levels nse-gap-record nse-gap-learn)
+TIMERS=($(ls deploy/systemd/*.timer | xargs -n1 basename | sed 's/\.timer$//'))
 
 systemctl --user daemon-reload
 systemctl --user start nse-signal-lab.service
@@ -20,8 +20,8 @@ for _ in $(seq 1 10); do
 done
 
 if [ "$STARTED" = true ]; then
-  notify-send "NSE Intraday Signal Lab" "Running at http://localhost:8501 — scheduled jobs active." --icon=utilities-terminal 2>/dev/null || true
+  notify-send "NSE Gap-Reversal Book" "Running at http://localhost:8501 — scheduled jobs active." --icon=utilities-terminal 2>/dev/null || true
 else
-  notify-send "NSE Intraday Signal Lab" "Starting... opening http://localhost:8501" --icon=utilities-terminal 2>/dev/null || true
+  notify-send "NSE Gap-Reversal Book" "Starting... opening http://localhost:8501" --icon=utilities-terminal 2>/dev/null || true
 fi
 xdg-open "http://localhost:8501" 2>/dev/null || true
