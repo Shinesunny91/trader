@@ -1,6 +1,6 @@
 """One command that answers "is this thing actually working?".
 
-Written after 2026-08-14, when three failures had been running silently:
+Originally written after 2026-08-14, when three failures had been running silently:
 
   * the Streamlit process had leaked to 15.2 GB over 35 days, stopped answering
     HTTP, and filled swap;
@@ -32,17 +32,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "data" / "candles.sqlite3"
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
-UNITS = [
-    "nse-signal-lab.service",
-    "nse-scanner.timer",
-    "nse-context.timer",
-    "nse-health.timer",
-    "nse-gap-picks.timer",
-    "nse-gap-final.timer",
-    "nse-gap-levels.timer",
-    "nse-gap-record.timer",
-    "nse-gap-learn.timer",
-]
+# Every timer in deploy/systemd plus the app: one source of truth with install.sh.
+UNITS = ["nse-signal-lab.service"] + sorted(
+    p.name for p in (ROOT / "deploy" / "systemd").glob("*.timer"))
+sys.path.insert(0, str(ROOT / "src"))
 
 
 def _run(*args: str) -> str:
@@ -89,38 +82,51 @@ def check_memory() -> tuple[str, str, str]:
     return ("app memory", status, f"{gb:.1f} GB (cap 5 GB, nightly restart)")
 
 
-def _freshness(symbols: list[str], label: str, max_age_minutes: int) -> list[tuple[str, str, str]]:
-    if not DB.exists():
-        return [(label, FAIL, "candle cache missing")]
-    now = datetime.now(tz=IST)
-    con = sqlite3.connect(str(DB))
+def _prev_trading_day(day):
+    from nse_intraday_ai.nse_calendar import is_trading_day
+
+    d = day - timedelta(days=1)
+    while not is_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def check_data(now: datetime) -> list[tuple[str, str, str]]:
+    """The inputs the 08:45 list is built from must cover the last session."""
     out = []
-    try:
-        for symbol in symbols:
-            row = con.execute(
-                "SELECT MAX(ts) FROM candles WHERE symbol=? AND interval='5m'", (symbol,)
-            ).fetchone()
-            if not row or not row[0]:
-                out.append((f"{label} {symbol}", FAIL, "no data at all"))
-                continue
-            last = datetime.fromisoformat(row[0]).astimezone(IST)
-            age = (now - last).total_seconds() / 60
-            status = OK if age <= max_age_minutes else FAIL
-            out.append((f"{label} {symbol}", status,
-                        f"last bar {last:%Y-%m-%d %H:%M} ({age / 60:.1f}h ago)"))
-    finally:
-        con.close()
+    files = sorted((ROOT / "data" / "nse_bhav").glob("*/bhav_*.parquet"))
+    latest = datetime.strptime(files[-1].stem.split("_")[1], "%Y%m%d").date() if files else None
+    # NSE publishes the bhavcopy ~18:00; the morning job fetches it at 08:45.
+    need = _prev_trading_day(now.date()) if now.strftime("%H:%M") >= "08:50" else \
+        _prev_trading_day(_prev_trading_day(now.date()))
+    status = OK if latest and latest >= need else FAIL
+    out.append(("NSE bhavcopy", status, f"latest {latest}, need {need}"))
+    if DB.exists():
+        con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT MAX(ts) FROM candles WHERE symbol='^NSEI' AND interval='1d'").fetchone()
+        finally:
+            con.close()
+        last = datetime.fromisoformat(row[0]).astimezone(IST).date() if row and row[0] else None
+        stale = last is None or (now.date() - last).days > 5
+        out.append(("daily candles (fallback rule)", WARN if stale else OK, f"^NSEI 1d through {last}"))
+    else:
+        out.append(("daily candles (fallback rule)", WARN, "candle cache missing"))
     return out
 
 
 def market_is_open(now: datetime) -> bool:
-    return now.weekday() < 5 and "09:15" <= now.strftime("%H:%M") <= "15:30"
+    from nse_intraday_ai.nse_calendar import is_trading_day
+
+    return is_trading_day(now.date()) and "09:15" <= now.strftime("%H:%M") <= "15:30"
 
 
 def check_book(now: datetime) -> list[tuple[str, str, str]]:
     """The validated book: is today's pick list out, and is the record current?"""
     import csv
     import json
+
+    from nse_intraday_ai.nse_calendar import is_trading_day
 
     out = []
     book = ROOT / "data" / "gap_reversal"
@@ -129,8 +135,8 @@ def check_book(now: datetime) -> list[tuple[str, str, str]]:
         out.append(("gap-reversal picks", FAIL, "data/gap_reversal/picks.json missing"))
     else:
         session = json.loads(picks.read_text()).get("session", "?")
-        # From 08:45 on a weekday the list must be for today.
-        due = now.weekday() < 5 and now.strftime("%H:%M") >= "08:50"
+        # From 08:45 on a trading day the list must be for today.
+        due = is_trading_day(now.date()) and now.strftime("%H:%M") >= "08:50"
         stale = due and now.strftime("%H:%M") <= "15:30" and session < now.date().isoformat()
         out.append(("gap-reversal picks", FAIL if stale else OK, f"list for {session}"))
 
@@ -156,8 +162,8 @@ def check_book(now: datetime) -> list[tuple[str, str, str]]:
         rows = list(csv.DictReader(handle))
     sessions = sorted({r["session"] for r in rows})
     total = sum(float(r["net"]) for r in rows)
-    # Holidays make a missing day ambiguous, so a gap is a warning, not a failure.
-    expected = now.date() if now.weekday() < 5 and now.strftime("%H:%M") >= "15:45" else None
+    # After 15:45 on a trading day that session must be recorded.
+    expected = now.date() if is_trading_day(now.date()) and now.strftime("%H:%M") >= "15:45" else None
     status = WARN if expected and sessions[-1] != expected.isoformat() else OK
     out.append(("gap-reversal paper book", status,
                 f"{len(sessions)} sessions, latest {sessions[-1]}, ₹{total:+,.0f} cumulative"))
@@ -185,17 +191,12 @@ def main() -> int:
     checks.append(check_app())
     checks.append(check_memory())
     checks.append(check_disk())
-    # During market hours the equity context must be minutes old, not days: a
-    # stale panel makes the gate refuse everything, silently.
-    context_age = 30 if market_is_open(now) else 24 * 60
-    checks += _freshness(["^NSEI", "^INDIAVIX", "USDINR=X", "CL=F"], "context", context_age)
-    checks += _freshness(["RELIANCE.NS", "HDFCBANK.NS"], "candles",
-                         30 if market_is_open(now) else 24 * 60)
+    checks += check_data(now)
     checks += check_book(now)
 
     problems = [c for c in checks if c[1] != OK]
     width = max(len(name) for name, _, _ in checks)
-    print(f"NSE Signal Lab health — {now:%Y-%m-%d %H:%M %Z}"
+    print(f"NSE Gap-Reversal Book health — {now:%Y-%m-%d %H:%M %Z}"
           f"  (market {'OPEN' if market_is_open(now) else 'closed'})")
     print("-" * (width + 34))
     for name, status, detail in checks:
@@ -207,11 +208,12 @@ def main() -> int:
         print("\nall good.")
         return 0
     print(f"\n{len(problems)} problem(s). Common fixes:")
-    print("  stale context  : systemctl --user start nse-context.service")
+    print("  stale bhavcopy : python scripts/gap_reversal.py picks   (fetches NSE data)")
     print("  app not serving: systemctl --user restart nse-signal-lab.service")
     print("  no pick list   : python scripts/gap_reversal.py picks")
     print("  missing session: python scripts/gap_reversal.py record --date YYYY-MM-DD")
-    return 1
+    # Warnings are reported but do not fail the unit; only real failures do.
+    return 1 if any(c[1] == FAIL for c in problems) else 0
 
 
 if __name__ == "__main__":

@@ -19,12 +19,9 @@ Weekly (and on a drift alarm):
 """
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from nse_intraday_ai import features as FT
@@ -67,6 +64,16 @@ def refresh(through: date, *, days: int = 20, log=print) -> None:
         log(f"  participant OI refresh failed: {exc}")
     arrived = G.refresh(list(FT.MARKET_SERIES) + list(FT.ADRS), interval="1d", period="1mo", log=log)
     log(f"  global/market series: {len(arrived)}/{len(FT.MARKET_SERIES) + len(FT.ADRS)}")
+    # Corporate events through this morning (filings up to 08:45 count for
+    # today's list) and the board-meeting schedule ahead.  Optional: without
+    # them the catalyst features are NaN, never wrong.
+    try:
+        from nse_intraday_ai import nse_corp
+        stats = nse_corp.refresh(through - timedelta(days=10), max(through, date.today()),
+                                 log=lambda m: log(f"  {m}"))
+        log(f"  NSE corporate events: {stats}")
+    except Exception as exc:                                  # noqa: BLE001
+        log(f"  corporate events refresh failed: {exc}")
 
 
 def previous_session(session: date) -> date:
@@ -99,18 +106,19 @@ def expert_scores(rows: pd.DataFrame, model: R.Ranker | None,
     return scores
 
 
-def blended(scores: dict[str, pd.Series], state: M.MetaState, mask: pd.Series) -> pd.Series:
-    live = {k: v.where(mask) for k, v in scores.items()}
-    weights = state.normalised(list(live))
-    return M.blend(live, weights)
-
-
 def top_book(outcome: pd.Series, score: pd.Series, mask: pd.Series, k: int = 8,
-             cost: float = COST_BPS) -> float | None:
+             cost: float = COST_BPS, gap0: pd.Series | None = None,
+             entry_limit: float | None = None) -> float | None:
+    """Per-slot net bps of the top-k; with an entry limit, picks that opened
+    below prev_close*(1+limit) were never filled and contribute 0 (as in R.book)."""
     s = score.where(mask).dropna()
     if len(s) < k:
         return None
-    return float(outcome.reindex(s.nlargest(k).index).mean()) - cost
+    top = s.nlargest(k).index
+    net = outcome.reindex(top) - cost
+    if entry_limit is not None and gap0 is not None:
+        net = net.where(gap0.reindex(top) >= entry_limit, 0.0)
+    return float(net.mean())
 
 
 def learn_from(session: date, state: M.MetaState, model: R.Ranker | None, *,
@@ -133,8 +141,10 @@ def learn_from(session: date, state: M.MetaState, model: R.Ranker | None, *,
     if open_model is not None and open_model.trained_through and str(session) <= open_model.trained_through:
         open_model = None
     scores = expert_scores(rows, model, open_model)
-    returns = {name: top_book(rows["short_bps"], s, mask,
-                              cost=COST_BPS + (OPEN_ENTRY_EXTRA_BPS if name == "ranker_open" else 0.0))
+    limit = G.GapReversalConfig().entry_limit_pct    # 08:45 lists enter via the auction limit
+    returns = {name: (top_book(rows["short_bps"], s, mask, cost=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
+                      if name == "ranker_open" else
+                      top_book(rows["short_bps"], s, mask, gap0=rows.get("gap0"), entry_limit=limit))
                for name, s in scores.items()}
     traded = traded_expert(state, set(scores))
     book = returns.get(traded)
@@ -194,6 +204,7 @@ def morning(session: date, config: G.GapReversalConfig = G.GapReversalConfig(), 
                   {"trained_through": model.trained_through, "n_train": model.n_train,
                    "evidence": model.meta.get("evidence")}),
         "drift_alarm": state.alarm, "cusum": round(state.cusum, 1),
+        "cautious_mode": state.cautious_mode, "size_multiplier": state.position_size_multiplier,
         "learned_through": state.updated_through,
         "candidates": int((rows["turn_rank"] <= BOOK_UNIVERSE).sum()),
     }
@@ -261,11 +272,11 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
     ranker_open  (09:09, knows today's opening gap)  must beat the ranker, net of
                                                      the extra cost of a 09:15 entry
     """
-    morning_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + FT.OPEN_FEATURES)
+    morning_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + FT.OPEN_FEATURES + FT.UNVALIDATED_FEATURES)
     # Auction-microstructure features join the open model only once the pre-open
     # archive is long enough to learn from; until then they are excluded.
     archived = nse_preopen.archived_sessions()
-    open_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + (
+    open_cfg = R.RankerConfig(exclude=R.DEFAULT_EXCLUDE + FT.UNVALIDATED_FEATURES + (
         () if archived >= FT.MIN_PREOPEN_SESSIONS else FT.PREOPEN_FEATURES))
     panel = FT.history(with_open=True)
     last = max(panel.index.get_level_values("session"))
@@ -274,8 +285,9 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
     log(f"walk-forward {start}..{last} on {len(panel):,} rows")
     oos = R.walk_forward(panel, morning_cfg, start=start, refit="QS", log=log)
     oos_open = R.walk_forward(panel, open_cfg, start=start, refit="QS", log=log)
-    rule_book = R.book(panel, panel["gap1"].where(clean), universe=BOOK_UNIVERSE)
-    model_book = R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE)
+    limit = G.GapReversalConfig().entry_limit_pct    # the 08:45 list enters via the auction
+    rule_book = R.book(panel, panel["gap1"].where(clean), universe=BOOK_UNIVERSE, entry_limit=limit)
+    model_book = R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE, entry_limit=limit)
     open_book = R.book(panel, oos_open.where(clean), universe=BOOK_UNIVERSE,
                        cost_bps=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
     evidence = {

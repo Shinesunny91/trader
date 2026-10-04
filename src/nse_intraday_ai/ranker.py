@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import pickle
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +37,7 @@ DEFAULT_EXCLUDE = ("mwpl_util1", "ban_today", "short_frac", "x_banned", "x_mwpl_
 
 @dataclass(frozen=True)
 class RankerConfig:
-    ranker_type: str = "hgb"  # "hgb" (HistGradientBoosting) or "lgbm_rank" (LightGBM LambdaRank)
+    ranker_type: str = "hgb"  # "hgb" (sklearn HistGB) | "lgbm_reg" | "lgbm_rank" (LambdaRank)
     target: str = "short_bps"
     target_kind: str = "demean"        # demean | rank | raw
     clip_bps: float = 800.0
@@ -48,7 +48,6 @@ class RankerConfig:
     l2_regularization: float = 1.0
     max_features: float = 0.6
     seeds: tuple[int, ...] = (0,)
-    seeds_multi: tuple[int, ...] = (0, 42, 137)
     # Recency weighting: a session's weight halves every `halflife_years` back
     # from the newest training session (None = every session counts equally).
     halflife_years: float | None = None
@@ -89,45 +88,39 @@ class Ranker:
         y = make_target(panel, config).to_numpy()
         if sample_weight is None and config.halflife_years:
             d = pd.to_datetime(panel.index.get_level_values("session"))
-            age = (d.max() - d).dt.days.to_numpy() / 365.25
+            age = np.asarray((d.max() - d).days, dtype=float) / 365.25   # TimedeltaIndex: .days, not .dt.days
             sample_weight = 0.5 ** (age / config.halflife_years)
         models = []
         for seed in config.seeds:
             if config.ranker_type == "lgbm_rank":
+                # LambdaRank needs non-negative integer relevance grades per
+                # query (session) and contiguous query groups.  Grades are the
+                # session decile of the raw target (9 = best short); the
+                # default 2^g-1 gain then concentrates on the top of the list,
+                # which is the only part the top-8 book trades.
                 import lightgbm as lgb
-                sessions = panel.index.get_level_values("session")
-                group_sizes = sessions.value_counts().sort_index().to_numpy()
+                sess = panel.index.get_level_values("session")
+                order = np.argsort(sess.to_numpy(), kind="stable")
+                raw = panel[config.target].clip(-config.clip_bps, config.clip_bps)
+                grade = (raw.groupby(sess).rank(pct=True, method="first") * 10).clip(upper=9.999)
+                grade = np.floor(grade.to_numpy()).astype(int)
+                group_sizes = pd.Series(sess[order]).value_counts(sort=False).reindex(
+                    pd.unique(sess[order])).to_numpy()
                 m = lgb.LGBMRanker(
-                    objective='lambdarank',
-                    metric='ndcg',
-                    n_estimators=config.max_iter,
-                    learning_rate=config.learning_rate,
-                    max_depth=-1,
-                    num_leaves=config.max_leaf_nodes,
-                    min_child_samples=config.min_samples_leaf,
-                    reg_lambda=config.l2_regularization,
-                    subsample=config.max_features,
-                    subsample_freq=1,
-                    random_state=seed,
-                    n_jobs=-1,
-                    verbose=-1,
-                    eval_at=[8],
-                    label_gain=None,
+                    objective="lambdarank", lambdarank_truncation_level=16,
+                    n_estimators=config.max_iter, learning_rate=config.learning_rate,
+                    num_leaves=config.max_leaf_nodes, min_child_samples=config.min_samples_leaf,
+                    reg_lambda=config.l2_regularization, colsample_bytree=config.max_features,
+                    random_state=seed, n_jobs=-1, verbose=-1,
                 )
-                m.fit(X, y, group=group_sizes, sample_weight=sample_weight)
+                m.fit(X[order], grade[order], group=group_sizes)
             elif config.ranker_type == "lgbm_reg":
                 import lightgbm as lgb
                 m = lgb.LGBMRegressor(
-                    n_estimators=config.max_iter,
-                    learning_rate=config.learning_rate,
-                    num_leaves=config.max_leaf_nodes,
-                    min_child_samples=config.min_samples_leaf,
-                    reg_lambda=config.l2_regularization,
-                    subsample=config.max_features,
-                    subsample_freq=1,
-                    random_state=seed,
-                    n_jobs=-1,
-                    verbose=-1,
+                    n_estimators=config.max_iter, learning_rate=config.learning_rate,
+                    num_leaves=config.max_leaf_nodes, min_child_samples=config.min_samples_leaf,
+                    reg_lambda=config.l2_regularization, colsample_bytree=config.max_features,
+                    random_state=seed, n_jobs=-1, verbose=-1,
                 )
                 m.fit(X, y, sample_weight=sample_weight)
             else:
@@ -152,13 +145,19 @@ class Ranker:
     def feature_importance(self) -> pd.Series:
         """Average feature importance across ensemble models (sorted descending).
 
-        Works with sklearn HistGBR, LightGBM Regressor, and LGBMRanker — all
-        expose `.feature_importances_`.  For weekly feature health reports.
+        LightGBM models expose `.feature_importances_`; sklearn's HistGB does
+        not, so for it the split gains of every fitted tree are summed instead.
         """
         importances = []
         for m in self.models:
             if hasattr(m, "feature_importances_"):
-                importances.append(m.feature_importances_)
+                importances.append(np.asarray(m.feature_importances_, dtype=float))
+            elif hasattr(m, "_predictors"):              # sklearn HistGradientBoosting
+                gain = np.zeros(len(self.features))
+                for tree in (t for it in m._predictors for t in it):
+                    nodes = tree.nodes[tree.nodes["is_leaf"] == 0]
+                    np.add.at(gain, nodes["feature_idx"], nodes["gain"])
+                importances.append(gain)
         if not importances:
             return pd.Series(dtype=float)
         avg = np.mean(importances, axis=0)
@@ -180,6 +179,11 @@ class Ranker:
     def load(cls, directory: Path) -> "Ranker":
         meta = json.loads((directory / "meta.json").read_text())
         cfg = meta.pop("config")
+        # Tolerate config fields added or retired since the model was saved:
+        # a champion must keep loading across refactors (unknown keys dropped,
+        # missing ones take today's defaults).
+        known = RankerConfig.__dataclass_fields__
+        cfg = {k: v for k, v in cfg.items() if k in known}
         cfg["seeds"] = tuple(cfg.get("seeds", (0,)))
         cfg["exclude"] = tuple(cfg.get("exclude", ()))
         return cls(config=RankerConfig(**cfg), features=meta.pop("features"),
@@ -234,7 +238,7 @@ def walk_forward(panel: pd.DataFrame, config: RankerConfig = RankerConfig(), *,
             continue
         weight = None
         if halflife_years or config.halflife_years:
-            age = (a - d[train]).dt.days.to_numpy() / 365.25
+            age = np.asarray((a - d[train]).days, dtype=float) / 365.25
             weight = 0.5 ** (age / (halflife_years or config.halflife_years))
         model = Ranker.fit(panel[train], config, sample_weight=weight)
         out[test] = model.score(panel[test])
@@ -247,11 +251,15 @@ FEES_BPS = 7.0
 
 
 def book(panel: pd.DataFrame, score: pd.Series, *, k: int = 8, universe: int = 300,
-         cost_bps: float | None = 13.0, side: str = "short") -> pd.Series:
+         cost_bps: float | None = 13.0, side: str = "short",
+         entry_limit: float | None = None) -> pd.Series:
     """Net bps per trade of each session's top-k book (score descending).
 
     cost_bps=None charges each trade fees + its own estimated effective spread
     (Abdi-Ranaldo, floored at 3 bps) instead of a flat cost.
+    entry_limit: pre-open sell limit at prev_close*(1+entry_limit); a pick whose
+    official open (gap0) is below it is not traded and earns 0 — the day's value
+    stays per *slot*, i.e. return on the whole book's capital.
     """
     ok = score.notna() & (panel["turn_rank"] <= universe)
     df = pd.DataFrame({"s": score[ok], "y": panel.loc[ok, f"{side}_bps"]})
@@ -259,7 +267,10 @@ def book(panel: pd.DataFrame, score: pd.Series, *, k: int = 8, universe: int = 3
                if cost_bps is None else cost_bps)
     df["r"] = df.groupby(level="session")["s"].rank(ascending=False, method="first")
     top = df[df["r"] <= k]
-    return (top["y"] - top["c"]).groupby(level="session").mean()
+    net = top["y"] - top["c"]
+    if entry_limit is not None:
+        net = net.where(panel.loc[top.index, "gap0"] >= entry_limit, 0.0)
+    return net.groupby(level="session").mean()
 
 
 def summarize(daily: pd.Series, start: str | None = None, end: str | None = None) -> dict:
@@ -295,3 +306,49 @@ def paired(a: pd.Series, b: pd.Series, start: str | None = None, end: str | None
     return {"mean_diff_bps": round(float(diff.mean()), 2),
             "t_stat": round(float(diff.mean() / diff.std() * np.sqrt(len(diff))), 2),
             "sessions": int(len(diff)), "a_better_pct": round(float((diff > 0).mean() * 100), 1)}
+
+
+# ── selection-bias controls for research comparisons ────────────────────────
+
+def deflated_sharpe(daily: pd.Series, n_trials: int, trial_sharpes: list[float] | None = None) -> dict:
+    """Bailey & López de Prado (2014) Deflated Sharpe Ratio of the *selected* series.
+
+    The probability that the true per-session Sharpe is above the best Sharpe
+    one would expect from `n_trials` unskilled variants, corrected for the
+    series' skew and fat tails.  `trial_sharpes` (per-session Sharpes of every
+    variant tried) sets the cross-trial variance; without it 1/T is used.
+    """
+    from statistics import NormalDist
+
+    x = pd.Series(daily).dropna().to_numpy(float)
+    t = len(x)
+    if t < 30 or x.std(ddof=1) == 0:
+        return {"dsr": float("nan"), "sr": float("nan"), "sr0": float("nan"), "n_trials": n_trials}
+    sr = x.mean() / x.std(ddof=1)
+    z = (x - x.mean()) / x.std(ddof=0)
+    skew, kurt = float((z ** 3).mean()), float((z ** 4).mean())
+    var_sr = float(np.var(trial_sharpes, ddof=1)) if trial_sharpes and len(trial_sharpes) > 1 else 1.0 / t
+    nd, gamma = NormalDist(), 0.5772156649
+    n = max(int(n_trials), 2)
+    sr0 = np.sqrt(var_sr) * ((1 - gamma) * nd.inv_cdf(1 - 1 / n) + gamma * nd.inv_cdf(1 - 1 / (n * np.e)))
+    denom = np.sqrt(max(1 - skew * sr + (kurt - 1) / 4 * sr ** 2, 1e-12))
+    dsr = nd.cdf((sr - sr0) * np.sqrt(t - 1) / denom)
+    return {"dsr": round(float(dsr), 4), "sr": round(float(sr), 4), "sr0": round(float(sr0), 4),
+            "n_trials": n, "skew": round(skew, 2), "kurtosis": round(kurt, 2)}
+
+
+def holm(pvalues: dict[str, float]) -> dict[str, float]:
+    """Holm step-down adjusted p-values (family-wise error control)."""
+    items = sorted(pvalues.items(), key=lambda kv: kv[1])
+    m, running, out = len(items), 0.0, {}
+    for i, (name, p) in enumerate(items):
+        running = max(running, min(1.0, (m - i) * p))
+        out[name] = round(running, 4)
+    return out
+
+
+def paired_pvalue(t_stat: float) -> float:
+    """One-sided p-value of a paired t (normal approximation; T is in the hundreds)."""
+    from statistics import NormalDist
+
+    return float(1 - NormalDist().cdf(t_stat))

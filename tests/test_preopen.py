@@ -21,7 +21,7 @@ def _payload(stamp: str, n: int = 10):
 
 
 def test_parse_and_final_for_today():
-    frame = PO.parse(_payload("30-Sep-2026 09:09:12"))
+    frame = PO.parse(_payload("30-Sep-2026 09:11:40"))
     final = PO.final_for(date(2026, 9, 30), frame)
     assert set(final["series"]) == {"EQ"} and len(final) == 10
     opens = PO.opens(final)
@@ -33,3 +33,11 @@ def test_refuses_yesterdays_snapshot_and_unfinished_auction():
         PO.final_for(date(2026, 9, 30), PO.parse(_payload("29-Sep-2026 09:09:12")))
     with pytest.raises(PO.PreOpenNotReady, match="too early"):
         PO.final_for(date(2026, 9, 30), PO.parse(_payload("30-Sep-2026 09:05:00")))
+
+
+def test_auction_cutoff_follows_the_2026_09_07_restructure():
+    # Before: entry closed at exactly 09:08, so a 09:08:30 stamp is final.
+    assert len(PO.final_for(date(2026, 9, 4), PO.parse(_payload("04-Sep-2026 09:08:30")))) == 10
+    # After: entry closes at a random moment in 09:08-09:10; 09:09 may be indicative.
+    with pytest.raises(PO.PreOpenNotReady, match="too early"):
+        PO.final_for(date(2026, 9, 30), PO.parse(_payload("30-Sep-2026 09:09:12")))

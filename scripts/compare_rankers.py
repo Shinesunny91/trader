@@ -1,206 +1,167 @@
 #!/usr/bin/env python3
-"""Walk-forward comparison of ranker variants on the 10-year gap-reversal dataset.
+"""Walk-forward A/B of ranker variants, faithful to the live 08:45 book.
 
-Runs each variant through the same expanding-window quarterly-refit walk-forward
-used by the live system, then compares net bps/trade, Sharpe, win-rate, and
-paired t-stats against the baseline.
+Every variant goes through the same expanding-window, quarterly-refit
+walk-forward as `pipeline.weekly()`, and is booked exactly as the live list is
+traded: top-8 of the 300 most liquid names, trade-for-trade names removed,
+pre-open SELL LIMIT entry (unfilled picks earn 0), 13 bps costs.
 
-Usage:
-    cd trading-workspace
-    PYTHONPATH=src .venv/bin/python scripts/compare_rankers.py
+A variant replaces the baseline only if its paired daily edge has t >= 3 after
+a Holm correction across the variants in the run (Harvey, Liu & Zhu 2016); the
+Deflated Sharpe charges for every trial made so far.
+
+    PYTHONPATH=src .venv/bin/python scripts/compare_rankers.py                 # default set
+    PYTHONPATH=src .venv/bin/python scripts/compare_rankers.py morning morning_corp
+    PYTHONPATH=src .venv/bin/python scripts/compare_rankers.py --rebuild-panel
+
+Run long jobs under systemd so they survive restarts:
+    systemd-run --user --unit=compare-rankers -p Nice=5 -p MemoryMax=10G \
+        --working-directory=$PWD --setenv=PYTHONPATH=src \
+        .venv/bin/python scripts/compare_rankers.py
+Outputs: data/ranker_comparison/<variant>.parquet (OOS scores + daily book),
+data/ranker_comparison.json (report).
 """
-import sys, time
+from __future__ import annotations
+
+import argparse
+import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import numpy as np
-import pandas as pd
+import pandas as pd  # noqa: E402
 
-from nse_intraday_ai.features import history
-from nse_intraday_ai.ranker import (
-    RankerConfig, walk_forward, book, summarize, paired, feature_columns,
+from nse_intraday_ai import features as FT  # noqa: E402
+from nse_intraday_ai.atomic_io import atomic_write_json  # noqa: E402
+from nse_intraday_ai.gap_reversal import GapReversalConfig  # noqa: E402
+from nse_intraday_ai.pipeline import BOOK_UNIVERSE, COST_BPS  # noqa: E402
+from nse_intraday_ai.ranker import (  # noqa: E402
+    DEFAULT_EXCLUDE, RankerConfig, book, deflated_sharpe, holm, paired, paired_pvalue,
+    summarize, walk_forward,
 )
 
+OUT = ROOT / "data" / "ranker_comparison"
+PANEL = OUT / "panel_v2.parquet"          # v2: built with the corp features
+REPORT = ROOT / "data" / "ranker_comparison.json"
+START = "2019-01-01"
+# Variants already tried in docs/research-log.md; the DSR charges for them.
+TRIALS_SO_FAR = 30
 
-def log(msg):
+MORNING = DEFAULT_EXCLUDE + FT.OPEN_FEATURES          # what the 08:45 model may not see
+VARIANTS: dict[str, RankerConfig] = {
+    # the production champion's recipe
+    "morning": RankerConfig(exclude=MORNING + FT.CORP_FEATURES),
+    # + catalyst features (results / announcements / exchange queries / gap z)
+    "morning_corp": RankerConfig(exclude=MORNING),
+    # optional, not in the default run (already found neutral on the open panel)
+    "morning_lgbm_reg": RankerConfig(ranker_type="lgbm_reg", exclude=MORNING + FT.CORP_FEATURES),
+    "morning_3seed": RankerConfig(seeds=(0, 42, 137), exclude=MORNING + FT.CORP_FEATURES),
+}
+DEFAULT_RUN = ("morning", "morning_corp")
+BASELINE = "morning"
+
+
+def log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def run_variant(name, panel, config, **wf_kwargs):
-    """Run walk-forward + book simulation for one ranker variant."""
-    log(f"--- {name} ---")
-    log(f"  config: ranker_type={config.ranker_type}, seeds={config.seeds}, "
-        f"halflife={config.halflife_years}, target_kind={config.target_kind}")
+def load_panel(rebuild: bool) -> pd.DataFrame:
+    if PANEL.exists() and not rebuild:
+        return pd.read_parquet(PANEL)
+    log("building the full point-in-time panel (same code path as pipeline.weekly) ...")
+    panel = FT.history(with_open=True)
+    OUT.mkdir(parents=True, exist_ok=True)
+    panel.to_parquet(PANEL)
+    return panel
+
+
+def books(panel: pd.DataFrame, score: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """(live book with the pre-open limit, the same picks entered at the open)."""
+    clean = panel["was_be_20"].fillna(0) == 0
+    s = score.where(clean)
+    limit = GapReversalConfig().entry_limit_pct
+    return (book(panel, s, universe=BOOK_UNIVERSE, cost_bps=COST_BPS, entry_limit=limit),
+            book(panel, s, universe=BOOK_UNIVERSE, cost_bps=COST_BPS))
+
+
+def run_variant(name: str, panel: pd.DataFrame, start: str) -> pd.DataFrame:
+    path = OUT / f"{name}.parquet"
+    if path.exists():
+        log(f"  {name}: checkpoint")
+        return pd.read_parquet(path)
+    cfg = VARIANTS[name]
+    log(f"--- {name}: {cfg.ranker_type}, seeds={cfg.seeds}, {len(cfg.exclude)} excluded ---")
     t0 = time.time()
-    scores = walk_forward(panel, config, log=lambda m: log(m), **wf_kwargs)
-    elapsed = time.time() - t0
-    daily = book(panel, scores, k=8, cost_bps=13.0)
-    stats = summarize(daily)
-    stats["variant"] = name
-    stats["elapsed_sec"] = round(elapsed, 1)
-    log(f"  {name}: {stats['net_bps_per_trade']:.1f} bps/trade, "
-        f"t={stats.get('t_stat', 'N/A')}, sharpe={stats.get('sharpe', 'N/A')}, "
-        f"elapsed={elapsed:.0f}s")
-    return scores, daily, stats
+    scores = walk_forward(panel, cfg, start=start, refit="QS", log=log)
+    limit_book, open_book = books(panel, scores)
+    daily = pd.DataFrame({"net_bps": limit_book, "net_bps_at_open": open_book})
+    daily.attrs["elapsed"] = time.time() - t0
+    daily.to_parquet(path)
+    scores.dropna().rename("score").to_frame().to_parquet(OUT / f"{name}_scores.parquet")
+    log(f"  {name}: {limit_book.mean():.1f} bps/day-slot, {time.time() - t0:.0f}s")
+    return daily
 
 
-def main():
-    log("Loading 10-year feature panel...")
-    cache = ROOT / "data" / "ranker_comparison" / "panel.parquet"
-    if cache.exists():
-        panel = pd.read_parquet(cache)
-    else:
-        panel = history(with_open=True)   # same panel as pipeline.weekly()
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        panel.to_parquet(cache)
-    log(f"Panel: {len(panel):,} rows, {panel.index.get_level_values('session').nunique()} sessions, "
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("variants", nargs="*", help=f"subset of {sorted(VARIANTS)}")
+    ap.add_argument("--start", default=START, help="first out-of-sample session")
+    ap.add_argument("--rebuild-panel", action="store_true")
+    args = ap.parse_args()
+    names = args.variants or list(DEFAULT_RUN)
+    unknown = set(names) - set(VARIANTS)
+    if unknown:
+        ap.error(f"unknown variants {sorted(unknown)}")
+    if BASELINE not in names:
+        names.insert(0, BASELINE)
+
+    panel = load_panel(args.rebuild_panel)
+    log(f"panel {len(panel):,} rows, {panel.index.get_level_values('session').nunique()} sessions, "
         f"{len(panel.columns)} columns")
-    
-    # Define variants to test
-    variants = {
-        # 1. BASELINE: Current production config
-        "baseline_hgb": RankerConfig(),
-        
-        # 2. HGB with multi-seed ensemble (diversification)
-        "hgb_3seed": RankerConfig(seeds=(0, 42, 137)),
-        
-        # 3. HGB with recency weighting (3-year halflife)
-        "hgb_recency": RankerConfig(halflife_years=3.0),
-        
-        # 4. HGB with both multi-seed + recency
-        "hgb_3seed_recency": RankerConfig(seeds=(0, 42, 137), halflife_years=3.0),
-        
-        # 5. LightGBM Regressor (same objective, faster/different trees)
-        "lgbm_reg": RankerConfig(ranker_type="lgbm_reg"),
-        
-        # 6. LightGBM Regressor with multi-seed
-        "lgbm_reg_3seed": RankerConfig(ranker_type="lgbm_reg", seeds=(0, 42, 137)),
-        
-        # 7. LambdaMART LTR (ranking-native objective, NDCG@8)
-        "lgbm_rank": RankerConfig(ranker_type="lgbm_rank"),
-        
-        # 8. LambdaMART with multi-seed
-        "lgbm_rank_3seed": RankerConfig(ranker_type="lgbm_rank", seeds=(0, 42, 137)),
-        
-        # 9. LambdaMART with recency weighting
-        "lgbm_rank_recency": RankerConfig(ranker_type="lgbm_rank", halflife_years=3.0),
-        
-        # 10. Rank-based targets instead of demeaned
-        "hgb_rank_target": RankerConfig(target_kind="rank"),
-        
-        # 11. LambdaMART with rank targets
-        "lgbm_rank_ranktarget": RankerConfig(ranker_type="lgbm_rank", target_kind="rank"),
-    }
-    
-    # Also include the simple gap rule as baseline reference
-    log("Computing gap rule baseline...")
-    gap_scores = panel["gap1"] if "gap1" in panel.columns else None
-    if gap_scores is not None:
-        gap_daily = book(panel, gap_scores, k=8, cost_bps=13.0)
-        gap_stats = summarize(gap_daily)
-        gap_stats["variant"] = "gap_rule"
-        gap_stats["elapsed_sec"] = 0
-        log(f"  gap_rule: {gap_stats['net_bps_per_trade']:.1f} bps/trade, t={gap_stats.get('t_stat')}")
-    else:
-        gap_daily = None
-        gap_stats = {"variant": "gap_rule", "sessions": 0}
-    
-    # Run all variants.  Each finished variant's daily series is checkpointed
-    # so an interrupted run resumes where it stopped instead of starting over.
-    ckpt = ROOT / "data" / "ranker_comparison"
-    ckpt.mkdir(parents=True, exist_ok=True)
-    only = set(sys.argv[1:])
-    results = {}
-    all_stats = [gap_stats] if gap_stats else []
-    all_daily = {"gap_rule": gap_daily} if gap_daily is not None else {}
+    rule_limit, rule_open = books(panel, panel["gap1"])
+    daily = {"gap_rule": rule_limit}
+    at_open = {"gap_rule": rule_open}
+    for n in names:
+        d = run_variant(n, panel, args.start)
+        daily[n], at_open[n] = d["net_bps"], d["net_bps_at_open"]
 
-    for name, config in variants.items():
-        if only and name not in only:
-            continue
-        path = ckpt / f"{name}.parquet"
-        if path.exists():
-            daily = pd.read_parquet(path)["net_bps"]
-            stats = summarize(daily)
-            stats["variant"] = name
-            stats["elapsed_sec"] = "cached"
-            all_daily[name] = daily
-            all_stats.append(stats)
-            log(f"  {name}: loaded checkpoint ({stats['net_bps_per_trade']:.1f} bps/trade)")
-            continue
-        try:
-            scores, daily, stats = run_variant(name, panel, config)
-            results[name] = scores
-            all_daily[name] = daily
-            all_stats.append(stats)
-            daily.rename("net_bps").to_frame().to_parquet(path)
-        except Exception as e:
-            log(f"  {name} FAILED: {e}")
-            import traceback
-            traceback.print_exc()
-            all_stats.append({"variant": name, "error": str(e)})
-    
-    # Build comparison table
-    log("\n" + "=" * 80)
-    log("RESULTS COMPARISON")
-    log("=" * 80)
-    
-    df = pd.DataFrame(all_stats)
-    cols = ["variant", "net_bps_per_trade", "t_stat", "sharpe", "up_day_pct",
-            "max_drawdown_pct", "sessions", "elapsed_sec"]
-    display_cols = [c for c in cols if c in df.columns]
-    print(df[display_cols].to_string(index=False))
-    
-    # Paired t-tests against baseline
-    baseline_name = "baseline_hgb"
-    if baseline_name in all_daily and all_daily[baseline_name] is not None:
-        log("\n" + "-" * 80)
-        log("PAIRED T-TESTS vs BASELINE (baseline_hgb)")
-        log("-" * 80)
-        baseline_daily = all_daily[baseline_name]
-        for name, daily in all_daily.items():
-            if name == baseline_name or daily is None:
-                continue
-            p = paired(daily, baseline_daily)
-            verdict = "BETTER ✓" if p["t_stat"] > 2.0 else (
-                "WORSE ✗" if p["t_stat"] < -2.0 else "NOT SIGNIFICANT")
-            log(f"  {name:30s} diff={p['mean_diff_bps']:+.1f} bps  t={p['t_stat']:+.2f}  "
-                f"{p['a_better_pct']:.0f}% better  [{verdict}]")
-    
-    # Save results
-    output_path = ROOT / "data" / "ranker_comparison.json"
-    import json
-    output = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "panel_shape": list(panel.shape),
-        "results": all_stats,
-    }
-    # Add paired tests
-    if baseline_name in all_daily:
-        paired_results = {}
-        for name, daily in all_daily.items():
-            if name == baseline_name or daily is None:
-                continue
-            paired_results[name] = paired(daily, all_daily[baseline_name])
-        output["paired_vs_baseline"] = paired_results
-    
-    output_path.write_text(json.dumps(output, indent=2, default=str))
-    log(f"\nResults saved to {output_path}")
-    
-    # Final recommendation
-    log("\n" + "=" * 80)
-    log("RECOMMENDATION")
-    log("=" * 80)
-    valid = [s for s in all_stats if "net_bps_per_trade" in s and s.get("sessions", 0) > 100]
-    if valid:
-        best = max(valid, key=lambda s: s["net_bps_per_trade"])
-        log(f"Best variant: {best['variant']} at {best['net_bps_per_trade']:.1f} bps/trade "
-            f"(t={best.get('t_stat', 'N/A')}, sharpe={best.get('sharpe', 'N/A')})")
-        baseline = next((s for s in valid if s["variant"] == baseline_name), None)
-        if baseline:
-            improvement = best["net_bps_per_trade"] - baseline["net_bps_per_trade"]
-            log(f"Improvement over baseline: {improvement:+.1f} bps/trade")
+    stats = {n: summarize(d, args.start) for n, d in daily.items()}
+    tested = [n for n in names if n != BASELINE]
+    pairs = {n: paired(daily[n], daily[BASELINE], args.start) for n in tested + ["gap_rule"]}
+    adj = holm({n: paired_pvalue(pairs[n]["t_stat"]) for n in tested}) if tested else {}
+    for n in tested:
+        pairs[n]["holm_p"] = adj[n]
+    sharpes = [s["sharpe"] / 250 ** 0.5 for s in stats.values() if "sharpe" in s]
+    dsr = {n: deflated_sharpe(d[d.index.astype(str) >= args.start], TRIALS_SO_FAR + len(names), sharpes)
+           for n, d in daily.items()}
+    limit_effect = {n: paired(daily[n], at_open[n], args.start) for n in daily}
+
+    print("\n" + "=" * 92)
+    print(f"{'variant':18s} {'bps/slot':>9s} {'t':>7s} {'Sharpe':>7s} {'maxDD%':>7s} {'DSR':>6s} "
+          f"{'vs base':>8s} {'t':>6s} {'holm_p':>7s} {'limit Δ':>8s} {'t':>6s}")
+    for n in daily:
+        s, p, le = stats[n], pairs.get(n, {}), limit_effect[n]
+        print(f"{n:18s} {s.get('net_bps_per_trade', float('nan')):9.2f} {s.get('t_stat', 0):7.2f} "
+              f"{s.get('sharpe', 0):7.2f} {s.get('max_drawdown_pct', 0):7.2f} {dsr[n]['dsr']:6.3f} "
+              f"{p.get('mean_diff_bps', 0):+8.2f} {p.get('t_stat', 0):+6.2f} {p.get('holm_p', float('nan')):7.3f} "
+              f"{le['mean_diff_bps']:+8.2f} {le['t_stat']:+6.2f}")
+    print("=" * 92)
+    print("bps/slot = net bps per book slot per session (unfilled limit orders count as 0).")
+    print("limit Δ  = live limit entry minus the same picks entered at the open.\n")
+
+    winners = [n for n in tested if pairs[n]["t_stat"] >= 3 and pairs[n]["holm_p"] < 0.05
+               and pairs[n]["mean_diff_bps"] > 0]
+    verdict = (f"ADOPT {max(winners, key=lambda n: pairs[n]['t_stat'])}" if winners
+               else f"KEEP {BASELINE} (no variant survives t>=3 after Holm)")
+    log("RECOMMENDATION: " + verdict)
+    atomic_write_json(REPORT, {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "start": args.start, "baseline": BASELINE,
+        "stats": stats, "paired_vs_baseline": pairs, "deflated_sharpe": dsr,
+        "limit_vs_open": limit_effect, "recommendation": verdict,
+    })
+    log(f"report: {REPORT}")
 
 
 if __name__ == "__main__":

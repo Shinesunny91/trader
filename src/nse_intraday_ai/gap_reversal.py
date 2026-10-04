@@ -83,6 +83,13 @@ class GapReversalConfig:
     # Ranked names published beyond `picks`, so a blocked short can be
     # replaced by the next one without re-running anything.
     reserves: int = 4
+    # Enter with a pre-open SELL LIMIT at prev_close * (1 + entry_limit_pct).
+    # In the call auction it fills AT the official open only if the stock opens
+    # at or above the limit; names that open more than 0.75% down are skipped
+    # (they lost 30.6 bps/trade, t=-5.1, 2016-2026).  10-year rule book, P&L on
+    # full capital: +4.8 bps/day, paired t=4.8, Sharpe 3.31 -> 4.27, max DD
+    # 13.9% -> 12.3%; flat plateau from -0.25% to -1.5%.  None = market order.
+    entry_limit_pct: float | None = -0.0075
 
 
 @dataclass
@@ -102,6 +109,7 @@ class Pick:
     stop_price: float | None = None
     score: float | None = None   # the ranking score (blended rank or the gap itself)
     ranked_by: str = "rule"      # rule | ranker | blend
+    limit_price: float | None = None   # pre-open SELL LIMIT; None = market order
 
     @property
     def stop_pct(self) -> float:
@@ -278,11 +286,10 @@ def features(daily: dict[str, pd.DataFrame], config: GapReversalConfig = GapReve
 
 
 def select(daily: dict[str, pd.DataFrame], session: date,
-           config: GapReversalConfig = GapReversalConfig(),
-           excluded_out: list[dict] | None = None) -> list[Pick]:
+           config: GapReversalConfig = GapReversalConfig()) -> list[Pick]:
     """The ranked short list for `session`, from bars strictly before it."""
     import logging
-    from nse_intraday_ai.earnings_calendar import get_earnings_exclusions
+    from nse_intraday_ai.nse_corp import results_day_names
 
     history = {k: v[v.index < session] for k, v in daily.items()}
     if history["close"].empty:
@@ -301,15 +308,13 @@ def select(daily: dict[str, pd.DataFrame], session: date,
     table = table.dropna(subset=["gap", "atr"])
     table = table[table["atr"] > 0].sort_values("gap", ascending=False)
 
-    candidates = table.index.tolist()
-    exclusions = get_earnings_exclusions(candidates, session)
-    if exclusions:
-        logger = logging.getLogger(__name__)
-        logger.info(f"Excluding stocks near earnings for session {session}: {exclusions}")
-        if excluded_out is not None:
-            for ex in exclusions:
-                excluded_out.append({"symbol": ex, "reason": "earnings announcement within 2 days"})
-        table = table[~table.index.isin(exclusions)]
+    # Results around the gap are NOT excluded: the corp features (nse_corp)
+    # let the ranker learn whether a catalyst makes a gap run.  The names are
+    # logged so a trader can see them (cache only — no network here).
+    shortlist = table.index[:config.picks + config.reserves].tolist()
+    flagged = {k: v for k, v in results_day_names(shortlist, session).items() if v}
+    if flagged:
+        logging.getLogger(__name__).info(f"results-related names on the {session} list: {flagged}")
 
     per_position = config.capital / config.picks
     picks: list[Pick] = []
@@ -367,6 +372,30 @@ def picks_from_rows(rows: pd.DataFrame, score: pd.Series,
 
 # ── execution simulation ────────────────────────────────────────────────────
 
+def tick_size(price: float) -> float:
+    """NSE cash-market tick by price band (NSE/CMTR/67133, from 2025-04-15)."""
+    for upper, tick in ((250, 0.01), (1_000, 0.05), (5_000, 0.10), (10_000, 0.50), (20_000, 1.00)):
+        if price < upper:
+            return tick
+    return 5.00
+
+
+def entry_limit(prev_close: float, pct: float) -> float:
+    """Sell-limit price, rounded UP to the tick (never looser than tested)."""
+    raw = prev_close * (1 + pct)
+    tick = tick_size(raw)
+    return round(math.ceil(round(raw / tick, 6)) * tick, 2)
+
+
+def with_entry_limits(picks: list[Pick], config: GapReversalConfig = GapReversalConfig()) -> list[Pick]:
+    """Attach each pick's pre-open sell-limit price (no-op when the rule is off)."""
+    if config.entry_limit_pct is not None:
+        for p in picks:
+            if p.prev_close:
+                p.limit_price = entry_limit(p.prev_close, config.entry_limit_pct)
+    return picks
+
+
 def simulate_pick(pick: Pick, bars: pd.DataFrame, session: date,
                   config: GapReversalConfig = GapReversalConfig()) -> Trade | None:
     """Short at the 09:15 open, buy-stop at entry + stop_atr*ATR, cover at 15:15.
@@ -374,13 +403,20 @@ def simulate_pick(pick: Pick, bars: pd.DataFrame, session: date,
     Stop is checked on every bar including the first; if a later bar opens
     through the stop the fill is that open (a gap through a stop fills worse,
     never better).  Exit at the open of the 15:15 bar, or — if that bar is
-    missing — at the last close before it.
+    missing — at the last close before it.  With an entry limit, a pick that
+    opens below it is a NO_FILL row (zero P&L): the auction order never traded.
     """
     if bars.empty or 0 not in bars.index:
         return None
     entry = float(bars.at[0, "open"])
     if not math.isfinite(entry) or entry <= 0:
         return None
+    limit = pick.limit_price
+    if limit is None and config.entry_limit_pct is not None and pick.prev_close:
+        limit = entry_limit(pick.prev_close, config.entry_limit_pct)
+    if limit is not None and entry < limit:
+        return Trade(session=session, symbol=pick.symbol, side=pick.side, entry=entry, exit=entry,
+                     quantity=0, exit_reason="NO_FILL", exit_time="09:15", gross=0.0, costs=0.0)
     qty = int((config.capital / config.picks) // entry)
     if qty <= 0:
         return None
@@ -436,24 +472,6 @@ def backtest(sessions: list[date], config: GapReversalConfig = GapReversalConfig
                 result.trades.append(trade)
                 taken += 1
     return result
-
-
-def cached_sessions(since: str, until: str | None = None, *, min_symbols: int = 300,
-                    db_path: Path | str = DB_PATH) -> list[date]:
-    """Sessions with 5m bars for most of the universe — the replayable ones."""
-    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
-    try:
-        rows = con.execute(
-            "SELECT substr(ts, 1, 10) AS d, COUNT(DISTINCT symbol) FROM candles "
-            "WHERE interval='5m' AND symbol LIKE '%.NS' AND ts>=? AND ts LIKE '%T03:45:00%' "
-            "GROUP BY d", (since,)).fetchall()
-    finally:
-        con.close()
-    # 03:45 UTC is the 09:15 IST opening bar: one row per symbol per session.
-    days = sorted(date.fromisoformat(d) for d, n in rows if n >= min_symbols)
-    if until:
-        days = [d for d in days if d <= date.fromisoformat(until)]
-    return days
 
 
 def backtest_daily(daily: dict[str, pd.DataFrame],
@@ -664,12 +682,19 @@ def check_fresh(symbols: list[str], session: date, *, min_coverage: float = 0.9,
     if not complete:
         raise StaleDataError(f"no complete daily session in the 15 days before {session}")
     last = complete[-1]
+    from nse_intraday_ai.nse_calendar import is_trading_day
     for day in pd.bdate_range(last + pd.Timedelta(days=1), session - pd.Timedelta(days=1)):
         n = coverage.get(day.date(), 0)
         if n > 0:
             raise StaleDataError(
                 f"daily bars for {day.date()} are incomplete ({n}/{len(symbols)} names) — "
                 f"ranking {session} on {last} would use the wrong 'yesterday'")
+        # No bars at all is a holiday only if NSE agrees; otherwise the day
+        # was simply never downloaded.
+        if is_trading_day(day.date()):
+            raise StaleDataError(
+                f"no daily bars for trading day {day.date()} — ranking {session} on {last} "
+                f"would use the wrong 'yesterday'")
     return last
 
 
@@ -699,7 +724,6 @@ def publish_picks(session: date | None = None, config: GapReversalConfig = GapRe
                                  "(network, clock or Yahoo outage)")
     last = check_fresh(symbols, session)
     daily = load_daily(symbols, since=(pd.Timestamp(session) - pd.Timedelta(days=120)).date().isoformat())
-    excluded_list = []
-    picks = select(daily, session, config, excluded_out=excluded_list)
-    save_picks(session, picks, config, based_on=last.isoformat(), excluded=excluded_list)
+    picks = select(daily, session, config)
+    save_picks(session, picks, config, based_on=last.isoformat())
     return session, last, picks

@@ -210,13 +210,54 @@ def test_check_fresh_refuses_a_partially_downloaded_session(tmp_path):
         G.check_fresh(SYMS, date(2026, 9, 30), db_path=db)
 
 
-def test_check_fresh_steps_over_a_holiday_of_placeholder_bars(tmp_path):
+def test_check_fresh_steps_over_a_holiday_of_placeholder_bars(tmp_path, monkeypatch):
+    from nse_intraday_ai import nse_calendar
+    monkeypatch.setattr(nse_calendar, "is_trading_day", lambda d: d != date(2026, 9, 14))
     db = _daily_db(tmp_path, {"2026-09-11": {s: 1e5 for s in SYMS},
                               "2026-09-14": {s: 0.0 for s in SYMS}})
     assert G.check_fresh(SYMS, date(2026, 9, 15), db_path=db) == date(2026, 9, 11)
+
+
+def test_check_fresh_refuses_a_trading_day_that_was_never_downloaded(tmp_path, monkeypatch):
+    # 2026-10-04 dry run: Yahoo bars stopped at 09-29, Sep 30 / Oct 1 had no
+    # rows at all, and the fallback ranked Monday on 09-29 closes.
+    from nse_intraday_ai import nse_calendar
+    monkeypatch.setattr(nse_calendar, "is_trading_day", lambda d: d != date(2026, 10, 2))
+    db = _daily_db(tmp_path, {"2026-09-29": {s: 1e5 for s in SYMS}})
+    with pytest.raises(G.StaleDataError, match="trading day 2026-09-30"):
+        G.check_fresh(SYMS, date(2026, 10, 5), db_path=db)
 
 
 def test_check_fresh_refuses_when_nothing_recent_exists(tmp_path):
     db = _daily_db(tmp_path, {"2026-08-01": {s: 1e5 for s in SYMS}})
     with pytest.raises(G.StaleDataError):
         G.check_fresh(SYMS, date(2026, 9, 30), db_path=db)
+
+
+# ── auction entry limit ─────────────────────────────────────────────────────
+
+def test_tick_size_and_limit_rounding():
+    from nse_intraday_ai import gap_reversal as G
+    assert G.tick_size(171.37) == 0.01 and G.tick_size(386.6) == 0.05
+    assert G.tick_size(1767.5) == 0.10 and G.tick_size(6768) == 0.50 and G.tick_size(21500) == 5.0
+    lim = G.entry_limit(1000.0, -0.0075)            # 992.5 -> tick 0.05
+    assert lim == 992.5
+    lim = G.entry_limit(1388.83, -0.0075)           # 1378.41... -> rounded UP to 0.10
+    assert abs(lim - 1378.5) < 1e-9 and lim >= 1388.83 * (1 - 0.0075)
+
+
+def test_no_fill_when_open_below_limit():
+    import pandas as pd
+    from datetime import date
+    from nse_intraday_ai import gap_reversal as G
+    pick = G.Pick(rank=1, symbol="X.NS", side="SHORT", gap_prev_pct=3.0, prev_close=100.0, atr=3.0,
+                  stop_distance=2.25, quantity=100, position_value=10_000, turnover_cr=50.0)
+    G.with_entry_limits([pick])
+    assert pick.limit_price == 99.25
+    bars = pd.DataFrame({"open": [99.0] + [98.0] * 72, "high": [99.5] * 73, "low": [97.0] * 73,
+                         "close": [98.0] * 73})
+    t = G.simulate_pick(pick, bars, date(2026, 10, 5))
+    assert t.exit_reason == "NO_FILL" and t.quantity == 0 and t.net == 0
+    bars.loc[0, "open"] = 99.30                      # opens at/above the limit -> trades
+    t = G.simulate_pick(pick, bars, date(2026, 10, 5))
+    assert t.exit_reason != "NO_FILL" and t.quantity > 0

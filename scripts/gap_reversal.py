@@ -13,7 +13,6 @@ and evidence: src/nse_intraday_ai/gap_reversal.py.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -78,6 +77,7 @@ def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.P
     target = session or G.next_session()
     try:
         prev, picks, info = P.morning(target, CONFIG, fetch=fetch)
+        G.with_entry_limits(picks, CONFIG)
         G.save_picks(target, picks, CONFIG, based_on=prev.isoformat(), source="nse", **info)
         return target, prev, picks, info
     except Exception as exc:                                  # noqa: BLE001
@@ -85,6 +85,7 @@ def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.P
         # made: the gap rule on Yahoo data has its own freshness guard.
         print(f"NSE pipeline failed ({type(exc).__name__}: {exc}); falling back to the gap rule")
         target, last, picks = G.publish_picks(target, CONFIG, fetch=fetch)
+        G.with_entry_limits(picks, CONFIG)
         info = {"fallback": f"{type(exc).__name__}: {exc}"[:200]}
         payload = G.read_picks() or {}
         G.save_picks(target, picks, CONFIG, based_on=payload.get("based_on"), source="yahoo-rule", **info)
@@ -110,17 +111,19 @@ def cmd_picks(args) -> None:
 
     main = [p for p in picks if not p.reserve]
     lines = [f"{p.rank}. SHORT {p.quantity} {p.symbol.removesuffix('.NS'):<11} "
-             f"gap yday {p.gap_prev_pct:+.1f}%  stop +₹{p.stop_distance:,.1f} ({p.stop_pct:.1f}%)"
+             + (f"LIMIT ₹{p.limit_price:,.2f}  " if p.limit_price else "")
+             + f"gap yday {p.gap_prev_pct:+.1f}%  stop +₹{p.stop_distance:,.1f} ({p.stop_pct:.1f}%)"
              for p in main]
     reserves = ", ".join(p.symbol.removesuffix(".NS") for p in picks if p.reserve)
     now = datetime.now(IST)
-    late = session == now.date() and now.strftime("%H:%M") > "09:08"
+    late = session == now.date() and now.strftime("%H:%M") > "09:08"   # auction entry can close from 09:08
     if late:
         lines.insert(0, "⚠ LATE: the open has passed. The tested entry is the open itself — "
                         "entering now is a different, untested trade. Skip today.")
-    if info.get("drift_alarm"):
-        lines.insert(0, "⚠ DRIFT ALARM: the live book has been running persistently below its "
-                        "backtest. Consider half size until the weekly review.")
+    if info.get("drift_alarm") or info.get("cautious_mode"):
+        mult = info.get("size_multiplier", 0.6)
+        lines.insert(0, f"⚠ DRIFT ALARM / CAUTIOUS MODE: the live book has been running persistently "
+                        f"below its backtest. Trade {mult:.0%} of the quantities shown until it clears.")
     if info.get("ranked_by") == "ranker":
         t = info.get("guard_t")
         ranked = ("\nRanked by the trained model"
@@ -132,8 +135,13 @@ def cmd_picks(args) -> None:
         ranked = f"\nRanked by the gap rule ({info.get('fallback', 'fallback')})."
     body = "\n".join(lines) + (
         f"\nIf a name can't be shorted (ASM/T2T), use the next: {reserves}"
-        f"\nEnter: MIS market SELL in pre-open 09:00-09:07 (or 09:15 sharp)."
-        f"\nThen: BUY SL-M at your fill + the stop shown. Cover all at {CONFIG.square_off}."
+        + ("\nEnter in pre-open 09:00-09:08: MIS SELL LIMIT at the price shown. It fills at the "
+           "official open only if the stock opens at/above it. At 09:15 CANCEL any unfilled order "
+           "— do not chase (names that open lower lose on average)."
+           if any(p.limit_price for p in main) else
+           "\nEnter: MIS market SELL in pre-open 09:00-09:05 (NSE rejects pre-open market orders "
+           "after 09:05), or at 09:15 sharp.")
+        + f"\nThen: BUY SL-M at your fill + the stop shown. Cover all at {CONFIG.square_off}."
         f"\n~₹{CONFIG.capital / CONFIG.picks:,.0f} each, based on {last} closes." + ranked
     )
     push(f"📉 Gap-reversal shorts for {session:%a %d %b}", body, enabled=args.push)
@@ -207,6 +215,9 @@ def cmd_levels(args) -> None:
                  levels_at=datetime.now(IST).isoformat(timespec="seconds"))
     main = [p for p in opened if not p.reserve][:CONFIG.picks]
     body = "\n".join(
+        f"{p.symbol.removesuffix('.NS'):<11} opened ₹{p.entry:,.2f} below limit ₹{p.limit_price:,.2f} "
+        f"→ NOT FILLED, cancel the order"
+        if p.limit_price and p.entry < p.limit_price else
         f"{p.symbol.removesuffix('.NS'):<11} open ₹{p.entry:,.2f} → BUY SL-M ₹{p.stop_price:,.2f}"
         for p in main)
     body += f"\nCover everything at {CONFIG.square_off}. (Stops use the 09:15 open; use your own fill if different.)"

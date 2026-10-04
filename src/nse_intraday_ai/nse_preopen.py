@@ -1,10 +1,11 @@
-"""NSE's pre-open call auction: today's opening prices, known at 09:08.
+"""NSE's pre-open call auction: today's opening prices, known by ~09:12.
 
-Orders are collected 09:00-09:08, the auction clears at one equilibrium price
-per stock (which *becomes* the official open), and the continuous market starts
-at 09:15.  So between 09:08 and 09:15 every stock's opening gap is public — the
-freshest cross-sectional information of the day, seven minutes before anyone
-can trade on it continuously.  The 09:09 re-rank uses it.
+Orders are collected from 09:00 (market orders only until 09:05 since
+2026-09-07; entry closes at a random moment in 09:08-09:10), the auction clears
+at one equilibrium price per stock (which *becomes* the official open), and the
+continuous market starts at 09:15.  So between ~09:12 and 09:15 every stock's
+opening gap is public — the freshest cross-sectional information of the day.
+The open re-rank (timer nse-gap-final) uses it.
 
 Historically the auction price equals the bhavcopy's official open, so features
 built from it are backtestable exactly.  The feed also carries what NSE does not
@@ -72,14 +73,24 @@ def fetch(key: str = "ALL", *, session: requests.Session | None = None, retries:
     raise PreOpenNotReady(f"pre-open feed unavailable ({last})")
 
 
+# NSE restructured the pre-open on 2026-09-07: market orders only 09:00-09:05,
+# limit-only 09:05-09:10, order entry closes at a RANDOM time in 09:08-09:10,
+# then matching to 09:12.  Before that, entry closed at exactly 09:08.
+NEW_AUCTION_FROM = date(2026, 9, 7)
+
+
+def _final_cutoff(day: date) -> str:
+    return "09:10" if day >= NEW_AUCTION_FROM else "09:08"
+
+
 def final_for(day: date, frame: pd.DataFrame) -> pd.DataFrame:
-    """Keep EQ rows whose auction for `day` has finished (updated >= 09:08)."""
+    """Keep EQ rows whose auction for `day` has finished (updated after order entry closed)."""
     eq = frame[(frame["series"] == "EQ") & (frame["iep"] > 0) & (frame["prev_close"] > 0)]
     stamp = eq["updated"].dropna()
     if stamp.empty or stamp.max().date() != day:
         raise PreOpenNotReady(f"pre-open feed is for {stamp.max().date() if not stamp.empty else '?'}, "
                               f"not {day}")
-    cutoff = pd.Timestamp.combine(day, datetime.strptime("09:08", "%H:%M").time())
+    cutoff = pd.Timestamp.combine(day, datetime.strptime(_final_cutoff(day), "%H:%M").time())
     done = eq[eq["updated"] >= cutoff]
     if len(done) < 0.8 * len(eq):
         raise PreOpenNotReady(f"only {len(done)}/{len(eq)} auctions final — too early")
@@ -98,7 +109,7 @@ def archive(day: date, frame: pd.DataFrame) -> Path:
     return path
 
 
-def wait_and_fetch(day: date, *, deadline: str = "09:13", poll_seconds: int = 10, log=print) -> pd.DataFrame:
+def wait_and_fetch(day: date, *, deadline: str = "09:14", poll_seconds: int = 10, log=print) -> pd.DataFrame:
     """Poll until the auction for `day` is final (or the deadline passes)."""
     stop = pd.Timestamp.combine(day, datetime.strptime(deadline, "%H:%M").time()).tz_localize(IST)
     while True:
