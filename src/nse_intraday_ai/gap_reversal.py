@@ -405,6 +405,35 @@ def with_entry_limits(picks: list[Pick], config: GapReversalConfig = GapReversal
     return picks
 
 
+def drop_untradeable(picks: list[Pick], table: pd.DataFrame,
+                     config: GapReversalConfig = GapReversalConfig()) -> tuple[list[Pick], list[str]]:
+    """Remove shorts that cannot be placed or protected today (`nse_bands`).
+
+    * stop not safely inside the price band: a stop at/beyond the upper circuit
+      can never trigger, and a stock locked there cannot be bought back.
+      Walk-forward cost of this filter: -0.2 bps/slot (t -0.5) — a free risk
+      control (docs/research-log.md);
+    * no longer in the EQ series today (moved to BE/trade-for-trade etc.
+      overnight): not MIS-shortable at all.
+    Reserves move up in order so the main list stays at `config.picks` names
+    when enough remain; ranks are renumbered.  Returns (picks, ["SYM (reason)"]).
+    """
+    from nse_intraday_ai.nse_bands import untradeable_reason
+
+    if table is None or table.empty:
+        return picks, []
+    keep, dropped = [], []
+    for p in sorted(picks, key=lambda p: p.rank):
+        reason = untradeable_reason(p.symbol, p.stop_pct, table)
+        if reason:
+            dropped.append(f"{p.symbol.removesuffix('.NS')} ({reason})")
+        else:
+            keep.append(p)
+    for rank, p in enumerate(keep, 1):
+        p.rank, p.reserve = rank, rank > config.picks
+    return keep, dropped
+
+
 def simulate_pick(pick: Pick, bars: pd.DataFrame, session: date,
                   config: GapReversalConfig = GapReversalConfig()) -> Trade | None:
     """Short at the 09:15 open, buy-stop at entry + stop_atr*ATR, cover at 15:15.

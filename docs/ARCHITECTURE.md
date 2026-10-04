@@ -58,6 +58,8 @@ flowchart LR
 | `nse_corp` | NSE corporate APIs (board meetings, financial results, Integrated Filing, announcements) with monthly parquet caches and manifests. Provides point-in-time catalyst features (`corp_features`). |
 | `nse_preopen` | Fetches and archives the pre-open call-auction snapshot. Encodes the auction timing regimes (09:08 before 2026-09-07, then 09:10 with random closure). |
 | `nse_calendar` | NSE trading holidays: the holiday-master API (7-day cache) plus bhav markers. |
+| `nse_bands` | Daily price bands (circuit limits) and series from NSE `sec_list.csv`, archived by download date under `data/nse_bands/`. `untradeable_reason()` flags shorts whose stop is not at least 0.5 pt inside the band or whose series is no longer EQ (not MIS-shortable); `gap_reversal.drop_untradeable()` removes them and promotes reserves (free in walk-forward: −0.2 bps/slot, t −0.5). |
+| `auth` | Dashboard password: salted PBKDF2-SHA256 hash in the git-ignored `data/auth.json` (mode 600). Set with `python -m nse_intraday_ai.auth --set-password`. |
 | `candle_cache` | SQLite (WAL) cache of Yahoo daily/5-minute candles: global series, the fallback path, and replay. |
 | `features` | `load_inputs()` → `build()`: one row per (session, symbol), every feature dated strictly before the decision time, ±inf → NaN. It defines the feature groups `OPEN_FEATURES`, `PREOPEN_FEATURES`, `CORP_FEATURES` and the gate `UNVALIDATED_FEATURES`. |
 | `ranker` | `Ranker` (sklearn HistGB by default; LightGBM regression/LambdaRank optional) with `walk_forward()`, `book()`, `summarize()`, `paired()`. Also the selection-bias controls `deflated_sharpe()` and `holm()`, plus champion persistence. |
@@ -85,7 +87,7 @@ Scripts (`scripts/`):
 
 | Time | Unit | What happens |
 |---|---|---|
-| 08:45 Mon–Fri | `nse-gap-picks` | Holiday check, then `refresh()` the NSE files, corporate events and global closes. `learn_from(previous session)` updates the guard and CUSUM. Features are built for today and ranked by the guarded expert. Limits are attached and `picks.json` is written. Push. |
+| 08:45 Mon–Fri | `nse-gap-picks` | Holiday check, then `refresh()` the NSE files, corporate events and global closes. `learn_from(previous session)` updates the guard and CUSUM. Features are built for today and ranked by the guarded expert. Shorts whose stop lies beyond the price band are dropped (reserves move up). Limits are attached and `picks.json` is written. Push. |
 | 09:10:30 | `nse-gap-final` | Fetch and archive the pre-open auction. If a promoted open model passes its guard, re-rank and push the final list. Otherwise the 08:45 list stands. |
 | 09:18 | `nse-gap-levels` | Push stop prices from the official opens; names that opened below their limit are marked NOT FILLED. |
 | 15:40 | `nse-gap-record` | Record the session in `paper_book.csv` (5-minute path; `NO_FILL` rows for unfilled limits). |
@@ -106,7 +108,7 @@ All timers use `Persistent=true`, so a job missed while the laptop was asleep ru
 
 - **Phone**: ntfy HTTPS push. The topic is secret-by-obscurity, so use a random one (`alerts.py --set-ntfy-topic`).
 - **Android app**: polls `ticket_api.py` (`/tickets`, `/record`, `/portfolio`, `/health`) on the LAN. It has no authentication, so run it only on a trusted network.
-- **Dashboard**: Streamlit on :8501 with XSRF protection on. Bind it to localhost or a firewalled LAN.
+- **Dashboard**: Streamlit on :8501 with XSRF protection on and a password login (`auth`; fails closed when no password is set, back-off after wrong attempts). Bind it to localhost or a firewalled LAN.
 - No inter-process sockets otherwise: the processes share state through the files under `data/`.
 
 ## 7. Learning loop and safeguards

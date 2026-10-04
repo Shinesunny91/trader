@@ -70,6 +70,24 @@ def push(title: str, body: str, *, enabled: bool, priority: str = "high") -> Non
 
 # ── commands ────────────────────────────────────────────────────────────────
 
+def _band_filter(session: date, picks: list[G.Pick], info: dict, *, fetch: bool) -> list[G.Pick]:
+    """Drop shorts that can't be placed/protected today (price band, series); never blocks a list."""
+    from nse_intraday_ai import nse_bands
+
+    try:
+        table = nse_bands.load(session, fetch=fetch)
+    except Exception as exc:                                  # noqa: BLE001 — optional input
+        print(f"  price bands unavailable ({type(exc).__name__}); list not band-filtered")
+        return picks
+    if table.empty:
+        print("  price bands unavailable; list not band-filtered")
+    picks, dropped = G.drop_untradeable(picks, table, CONFIG)
+    if dropped:
+        print(f"  dropped: {'; '.join(dropped)}")
+        info["band_excluded"] = dropped
+    return picks
+
+
 def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.Pick], dict]:
     """The NSE-data pipeline (experts + Hedge blend); the Yahoo gap rule if it fails."""
     from nse_intraday_ai import pipeline as P
@@ -77,6 +95,7 @@ def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.P
     target = session or G.next_session()
     try:
         prev, picks, info = P.morning(target, CONFIG, fetch=fetch)
+        picks = _band_filter(target, picks, info, fetch=fetch)
         G.with_entry_limits(picks, CONFIG)
         G.save_picks(target, picks, CONFIG, based_on=prev.isoformat(), source="nse", **info)
         return target, prev, picks, info
@@ -85,8 +104,9 @@ def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.P
         # made: the gap rule on Yahoo data has its own freshness guard.
         print(f"NSE pipeline failed ({type(exc).__name__}: {exc}); falling back to the gap rule")
         target, last, picks = G.publish_picks(target, CONFIG, fetch=fetch)
-        G.with_entry_limits(picks, CONFIG)
         info = {"fallback": f"{type(exc).__name__}: {exc}"[:200]}
+        picks = _band_filter(target, picks, info, fetch=fetch)
+        G.with_entry_limits(picks, CONFIG)
         payload = G.read_picks() or {}
         G.save_picks(target, picks, CONFIG, based_on=payload.get("based_on"), source="yahoo-rule", **info)
         return target, last, picks, info
@@ -133,6 +153,8 @@ def cmd_picks(args) -> None:
                   f"(t={info.get('guard_t')}) or no model is promoted yet.")
     else:
         ranked = f"\nRanked by the gap rule ({info.get('fallback', 'fallback')})."
+    if info.get("band_excluded"):
+        ranked += f"\nSkipped (can't be shorted/protected today): {'; '.join(info['band_excluded'])}."
     body = "\n".join(lines) + (
         f"\nIf a name can't be shorted (ASM/T2T), use the next: {reserves}"
         + ("\nEnter in pre-open 09:00-09:08: MIS SELL LIMIT at the price shown. It fills at the "
@@ -171,6 +193,7 @@ def cmd_final(args) -> None:
         print("the 08:45 list stands (no promoted open model, or its guard is off)")
         return
     picks, info = result
+    picks = _band_filter(session, picks, info, fetch=True)
     preliminary = [p["symbol"] for p in payload.get("picks", []) if not p.get("reserve")]
     extra = {k: v for k, v in payload.items() if k not in ("session", "generated_at", "config", "picks")}
     G.save_picks(session, picks, CONFIG, **{**extra, **info, "preliminary": preliminary,

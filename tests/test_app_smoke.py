@@ -23,8 +23,30 @@ def _no_exceptions(at: AppTest) -> None:
     assert not [e for e in at.error if "could not be rendered" in e.value], [e.value for e in at.error]
 
 
-def test_every_page_renders() -> None:
+@pytest.fixture
+def password(tmp_path, monkeypatch) -> str:
+    from nse_intraday_ai import auth
+    path = tmp_path / "auth.json"
+    monkeypatch.setenv("NSE_AUTH_FILE", str(path))
+    auth.set_password("test-pass-123", path)
+    return "test-pass-123"
+
+
+def _login(pw: str) -> AppTest:
     at = AppTest.from_file(str(APP), default_timeout=60).run(timeout=60)
+    at.text_input(key="pw").input(pw)
+    return at.button[0].click().run(timeout=60)
+
+
+def test_pages_are_hidden_until_login(password) -> None:
+    at = AppTest.from_file(str(APP), default_timeout=60).run(timeout=60)
+    assert not at.sidebar.radio, "pages visible without logging in"
+    at = _login("wrong-password")
+    assert not at.sidebar.radio and any("Wrong password" in e.value for e in at.error)
+
+
+def test_every_page_renders(password) -> None:
+    at = _login(password)
     _no_exceptions(at)
     radio = at.sidebar.radio(key="page")
     for page in radio.options:

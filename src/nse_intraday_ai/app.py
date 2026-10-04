@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -62,9 +63,37 @@ def page_about() -> None:
                "not guarantee future returns; shortability (ASM/T2T), slippage and leverage change outcomes.")
 
 
+def login_gate() -> bool:
+    """True once this browser session has entered the right password."""
+    from nse_intraday_ai import auth
+
+    if st.session_state.get("authed"):
+        return True
+    st.title(f"🔒 {APP_NAME}")
+    if not auth.is_configured():
+        st.error("No dashboard password is set. On the server run:  \n"
+                 "`PYTHONPATH=src .venv/bin/python -m nse_intraday_ai.auth --set-password`")
+        return False
+    with st.form("login", clear_on_submit=True):
+        pw = st.text_input("Password", type="password", key="pw")
+        ok = st.form_submit_button("Log in")
+    if ok:
+        if auth.verify(pw):
+            st.session_state["authed"] = True
+            st.session_state["fails"] = 0
+            st.rerun()
+        fails = st.session_state.get("fails", 0) + 1
+        st.session_state["fails"] = fails
+        time.sleep(min(2 ** fails, 30))              # make guessing slow
+        st.error("Wrong password.")
+    return False
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_NAME, page_icon="📉", layout="wide",
                        initial_sidebar_state="expanded")
+    if not login_gate():
+        return
     version, built = build_info()
     with st.sidebar:
         st.markdown(f"### 📉 {APP_NAME}")
@@ -73,6 +102,9 @@ def main() -> None:
         st.caption(f"v{version} · built {built}  \nDeveloper: {DEVELOPER}")
         if st.button("↻ Reload data", width="stretch"):
             st.cache_data.clear()
+            st.rerun()
+        if st.button("🔒 Log out", width="stretch"):
+            st.session_state["authed"] = False
             st.rerun()
     st.title(page.split(" ", 1)[1])
     try:

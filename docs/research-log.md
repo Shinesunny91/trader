@@ -74,6 +74,18 @@ All are fixed, with tests. A script-level smoke suite now exists.
 
 **Multiple-testing tally.** About 30 variants have been tried on this panel so far (DSR `TRIALS_SO_FAR`).
 
+**Price bands / series guard (risk control, adopted).** Monday's ranker list
+contained AUGMONT: a 5% price band with a 5.2% stop, so the stop sat beyond the
+upper circuit (it can never trigger, and a short can't be covered at the
+circuit). Applying today's `sec_list.csv` bands to the walk-forward ranker
+picks, dropping names whose stop is ≥ band − 0.5 pt changed the book by
+−0.23 bps/slot (t −0.53). Only 252 of 15,304 picks were affected, so the
+filter costs nothing measurable. Dropping all ≤5%-band names: +0.30 (t 0.5), not adopted.
+The same file gives today's series, so names moved overnight from EQ to
+BE/trade-for-trade (not MIS-shortable) are dropped too. In both cases reserves move up
+(`gap_reversal.drop_untradeable`). Bands are archived daily under
+`data/nse_bands/` for a proper point-in-time study later.
+
 ## 2026-09-29 (round 2) — point-in-time data, a learned ranker, and a self-correcting loop
 
 **Question.** Can the gap-reversal book be improved by ranking on more
