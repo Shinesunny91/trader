@@ -141,11 +141,15 @@ def learn_from(session: date, state: M.MetaState, model: R.Ranker | None, *,
     if open_model is not None and open_model.trained_through and str(session) <= open_model.trained_through:
         open_model = None
     scores = expert_scores(rows, model, open_model)
-    limit = G.GapReversalConfig().entry_limit_pct    # 08:45 lists enter via the auction limit
-    returns = {name: (top_book(rows["short_bps"], s, mask, cost=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
-                      if name == "ranker_open" else
-                      top_book(rows["short_bps"], s, mask, gap0=rows.get("gap0"), entry_limit=limit))
-               for name, s in scores.items()}
+    cfg = G.GapReversalConfig()
+
+    def graded(name: str, s: pd.Series) -> float | None:
+        if name == "ranker_open":
+            return top_book(rows["short_bps"], s, mask, cost=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
+        limit = cfg.entry_limit_pct if G.limit_applies(name, cfg) else None   # as each list is traded
+        return top_book(rows["short_bps"], s, mask, gap0=rows.get("gap0"), entry_limit=limit)
+
+    returns = {name: graded(name, s) for name, s in scores.items()}
     traded = traded_expert(state, set(scores))
     book = returns.get(traded)
     state.update(str(session), {k: v for k, v in returns.items() if v is not None}, book)
@@ -285,9 +289,12 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
     log(f"walk-forward {start}..{last} on {len(panel):,} rows")
     oos = R.walk_forward(panel, morning_cfg, start=start, refit="QS", log=log)
     oos_open = R.walk_forward(panel, open_cfg, start=start, refit="QS", log=log)
-    limit = G.GapReversalConfig().entry_limit_pct    # the 08:45 list enters via the auction
-    rule_book = R.book(panel, panel["gap1"].where(clean), universe=BOOK_UNIVERSE, entry_limit=limit)
-    model_book = R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE, entry_limit=limit)
+    # Each list is booked the way it is traded: the rule's via the pre-open
+    # limit, the ranker's (by default) at the open.
+    gcfg = G.GapReversalConfig()
+    lim = {k: (gcfg.entry_limit_pct if G.limit_applies(k, gcfg) else None) for k in ("rule", "ranker")}
+    rule_book = R.book(panel, panel["gap1"].where(clean), universe=BOOK_UNIVERSE, entry_limit=lim["rule"])
+    model_book = R.book(panel, oos.where(clean), universe=BOOK_UNIVERSE, entry_limit=lim["ranker"])
     open_book = R.book(panel, oos_open.where(clean), universe=BOOK_UNIVERSE,
                        cost_bps=COST_BPS + OPEN_ENTRY_EXTRA_BPS)
     evidence = {

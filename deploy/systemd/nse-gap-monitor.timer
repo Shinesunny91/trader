@@ -1,0 +1,9 @@
+[Unit]
+Description=Gap-reversal daily monitor, weekdays after the paper record
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

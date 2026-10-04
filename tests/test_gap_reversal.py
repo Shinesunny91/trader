@@ -261,3 +261,20 @@ def test_no_fill_when_open_below_limit():
     bars.loc[0, "open"] = 99.30                      # opens at/above the limit -> trades
     t = G.simulate_pick(pick, bars, date(2026, 10, 5))
     assert t.exit_reason != "NO_FILL" and t.quantity > 0
+
+
+def test_ranker_lists_enter_at_the_open_without_a_limit():
+    # The A/B found the limit helps the rule's picks but not the ranker's.
+    import pandas as pd
+    from datetime import date
+    from nse_intraday_ai import gap_reversal as G
+    pick = G.Pick(rank=1, symbol="X.NS", side="SHORT", gap_prev_pct=3.0, prev_close=100.0, atr=3.0,
+                  stop_distance=2.25, quantity=100, position_value=10_000, turnover_cr=50.0,
+                  ranked_by="ranker")
+    G.with_entry_limits([pick])
+    assert pick.limit_price is None
+    bars = pd.DataFrame({"open": [99.0] + [98.0] * 72, "high": [99.5] * 73, "low": [97.0] * 73,
+                         "close": [98.0] * 73})
+    t = G.simulate_pick(pick, bars, date(2026, 10, 5))
+    assert t.exit_reason != "NO_FILL" and t.quantity > 0
+    assert G.limit_applies("rule") and not G.limit_applies("ranker")

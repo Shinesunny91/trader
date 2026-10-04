@@ -15,7 +15,7 @@ Experiments and decisions: [docs/research-log.md](docs/research-log.md)
 | Universe | The 300 most liquid NSE EQ stocks by 20-session traded value, point-in-time. Price ≥ ₹50; names that were trade-for-trade in the last 20 sessions are excluded. |
 | Ranking | HistGradientBoosting ranker over ~190 point-in-time features. It falls back to the gap rule (yesterday's overnight gap) whenever its live paired record says so. |
 | Size | Top 8, equal weight (₹1.25 L each on ₹10 L), MIS, no leverage. |
-| Entry | **Pre-open SELL LIMIT at prev close × (1 − 0.75%)**, rounded up to the tick. Place it 09:00–09:08; **cancel anything unfilled at 09:15**. |
+| Entry | Ranker lists: market SELL in the pre-open (09:00–09:05) at the open. Rule-ranked lists: **pre-open SELL LIMIT at prev close × (1 − 0.75%)**, rounded up to the tick, placed 09:00–09:08; **cancel anything unfilled at 09:15**. The push message always states which applies. |
 | Stop | BUY SL-M at fill + 0.75 × 14-day ATR. |
 | Exit | Cover at 15:15. |
 
@@ -24,7 +24,8 @@ Experiments and decisions: [docs/research-log.md](docs/research-log.md)
 | | bps / trade | t | Sharpe |
 |---|---|---|---|
 | Gap rule, 10 years (2016–2026) | +31 | 10.5 | 3.3 |
-| Gap rule + pre-open limit (adopted 2026-10) | +4.8 bps/day on capital over the rule | paired t 4.8 | 3.3 → 4.3 |
+| Gap rule + pre-open limit (adopted 2026-10, rule lists only) | +4.8 bps/day on capital over the rule | paired t 4.8 | 3.3 → 4.3 |
+| Ranker, walk-forward 2019-01 → 2026-10 (08:45 features) | +65.4 vs rule +35.1 | paired t 11.9 | 6.9 |
 | Ranker vs rule, 2024-10 → 2026-10 (first promotion) | +50.1 vs +30.0 | paired t 3.7 | — |
 
 Live paper record since 2026-09-29 is in the app (Performance page) and in

@@ -47,7 +47,7 @@ PANEL = OUT / "panel_v2.parquet"          # v2: built with the corp features
 REPORT = ROOT / "data" / "ranker_comparison.json"
 START = "2019-01-01"
 # Variants already tried in docs/research-log.md; the DSR charges for them.
-TRIALS_SO_FAR = 30
+TRIALS_SO_FAR = 33
 
 MORNING = DEFAULT_EXCLUDE + FT.OPEN_FEATURES          # what the 08:45 model may not see
 VARIANTS: dict[str, RankerConfig] = {

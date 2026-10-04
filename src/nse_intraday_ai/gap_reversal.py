@@ -90,6 +90,11 @@ class GapReversalConfig:
     # full capital: +4.8 bps/day, paired t=4.8, Sharpe 3.31 -> 4.27, max DD
     # 13.9% -> 12.3%; flat plateau from -0.25% to -1.5%.  None = market order.
     entry_limit_pct: float | None = -0.0075
+    # Which experts' lists use the limit.  The walk-forward A/B (2019-2026,
+    # docs/research-log.md 2026-10-04) found it helps the gap rule (+4.8 bps,
+    # t=4.2) but not the ranker's picks (-0.4 bps, t=-0.3): those enter at the
+    # open with a market order.
+    entry_limit_for: tuple[str, ...] = ("rule",)
 
 
 @dataclass
@@ -387,12 +392,16 @@ def entry_limit(prev_close: float, pct: float) -> float:
     return round(math.ceil(round(raw / tick, 6)) * tick, 2)
 
 
+def limit_applies(ranked_by: str, config: GapReversalConfig = GapReversalConfig()) -> bool:
+    """Does a list ranked by `ranked_by` enter with the pre-open limit?"""
+    return config.entry_limit_pct is not None and ranked_by in config.entry_limit_for
+
+
 def with_entry_limits(picks: list[Pick], config: GapReversalConfig = GapReversalConfig()) -> list[Pick]:
-    """Attach each pick's pre-open sell-limit price (no-op when the rule is off)."""
-    if config.entry_limit_pct is not None:
-        for p in picks:
-            if p.prev_close:
-                p.limit_price = entry_limit(p.prev_close, config.entry_limit_pct)
+    """Attach the pre-open sell-limit price to picks whose expert uses it."""
+    for p in picks:
+        if p.prev_close and limit_applies(p.ranked_by, config):
+            p.limit_price = entry_limit(p.prev_close, config.entry_limit_pct)
     return picks
 
 
@@ -412,7 +421,7 @@ def simulate_pick(pick: Pick, bars: pd.DataFrame, session: date,
     if not math.isfinite(entry) or entry <= 0:
         return None
     limit = pick.limit_price
-    if limit is None and config.entry_limit_pct is not None and pick.prev_close:
+    if limit is None and limit_applies(pick.ranked_by, config) and pick.prev_close:
         limit = entry_limit(pick.prev_close, config.entry_limit_pct)
     if limit is not None and entry < limit:
         return Trade(session=session, symbol=pick.symbol, side=pick.side, entry=entry, exit=entry,

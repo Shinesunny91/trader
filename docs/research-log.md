@@ -14,6 +14,66 @@ git checkout fa1b3e2 -- scripts/<name>.py # restore one
 
 Newest first.
 
+## 2026-10-04 — cleanup, catalyst data, entry limit, and an honest A/B harness
+
+**Cleanup.** The voting scanner (17-strategy 5-minute ensemble, proven
+unprofitable after costs) and the swing book were retired. That removed 28 modules plus their
+scripts, tests and units (tag `pre-cleanup`; state in `data/archive/`). The
+package is now 18 modules around one validated book. See `docs/ARCHITECTURE.md`.
+
+**Oct-1 post-mortem (−₹3,149).** The rule ranks by *yesterday's* gap. Its four
+losers gapped up *again* on Oct 1 and kept rising (MOLBIO +15% open-to-close
+on 2.8× volume). Every stop filled beyond its level, so the stops limited the loss.
+On 10 years of data, picks with today's gap0 < −0.5% lose 30.6 bps (t −5.1),
+while picks with gap0 > +1% are the best trades (+70.9). Rejected, all worse than the baseline:
+skipping gap0 > 0 names, ranking by gap1/ATR, excluding high-ATR names,
+inverse-ATR sizing, and a market-gap day filter.
+
+**Pre-open SELL LIMIT at prev_close × (1 − 0.75%)** (NSE tick, rounded up).
+On the rule book (10 y): +4.8 bps/day on capital, paired t 4.84, Sharpe 3.31 → 4.27.
+The effect holds across limits from −0.25% to −1.5%.
+On the ranker's picks (walk-forward 2019-01 → 2026-10): **−0.4 bps, t −0.3** — no
+effect. Adopted for rule-ranked lists only (`GapReversalConfig.entry_limit_for`);
+ranker lists enter at the open.
+
+**NSE corporate events (new source).** `nse_corp` pulls board meetings,
+results, the Integrated Filing and all announcements (1.3 M since 2016), strictly point-in-time.
+Rule-book diagnostic, 2017+, net bps/trade:
+
+| flag | with | without | Welch t |
+|---|---|---|---|
+| results in the gap1 window | +14.1 (n 2,000) | +33.2 | −3.1 |
+| results in last 3 sessions | +17.7 | +34.2 | −3.1 |
+| exchange price-movement query (2 d) | +72.5 (n 381) | +30.4 | +1.8 |
+| gap1_z top vs bottom tercile | +25.6 | +41.6 | −3.0 |
+| ≥ 3 announcements in gap window | +17.4 | +35.0 (none) | — |
+
+This matches the literature: news-driven gaps drift, unexplained ones revert (Chan 2003; Savor 2012).
+Hard skips with refill did not help (−0.2 to −1.5 bps/trade).
+**Walk-forward A/B** (`compare_rankers.py`, 2019-01 → 2026-10, 1,913 sessions, live
+book: 300 names, T2T filter, limit): morning ranker +65.4 bps/slot (t 19.1,
+Sharpe 6.9); + catalyst features +67.6 (Sharpe 7.3); paired **+2.2 bps, t 1.41,
+Holm p 0.08 → not adopted**. The features stay built but gated
+(`features.UNVALIDATED_FEATURES`). Re-test once the 2025+ Integrated-Filing
+period has more data.
+
+**Ranker variants (open-feature panel, superseded harness).** LightGBM
+regression +1.5 bps (t 0.96) and 3-seed HGB +2.2 (t 1.86): not significant.
+LambdaRank (NDCG, integer grades) −19.2 (t −7.1): worse. HGB stays.
+*Caveat*: that harness included today's opening gap (an open-model setup) and inflated every
+variant to ~80 bps. It was rewritten to mirror the 08:45 book.
+
+**Bugs found by the cleanup.**
+- A SyntaxError in the 08:45 message would have crashed Monday's job.
+- Champion models failed to load after a config refactor.
+- The fallback's freshness guard accepted a 3-day-stale "yesterday".
+- `walk_forward` recency weighting crashed (TimedeltaIndex has no `.dt`).
+- ±inf features (pcr1, amihud20, pcr_chg1, fo_banknifty_oi_chg) went into tree binning.
+
+All are fixed, with tests. A script-level smoke suite now exists.
+
+**Multiple-testing tally.** About 30 variants have been tried on this panel so far (DSR `TRIALS_SO_FAR`).
+
 ## 2026-09-29 (round 2) — point-in-time data, a learned ranker, and a self-correcting loop
 
 **Question.** Can the gap-reversal book be improved by ranking on more

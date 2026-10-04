@@ -1,0 +1,10 @@
+[Unit]
+Description=Gap-reversal book: daily live-vs-expected monitor, pushed to the phone
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+Environment=PYTHONPATH=%h/trading-workspace/src
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/daily_monitor.py --push
+TimeoutStartSec=300

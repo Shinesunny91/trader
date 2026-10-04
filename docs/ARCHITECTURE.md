@@ -5,9 +5,10 @@ Developer: Shine · Package: `src/nse_intraday_ai` · Python ≥ 3.11
 ## 1. What the system does
 
 Each NSE trading day it publishes a list of **8 stocks to short intraday**:
-the liquid names most likely to give back yesterday's overnight gap-up. Entry is a
+the liquid names most likely to give back yesterday's overnight gap-up. Ranker lists
+enter at the open (pre-open market order). Lists ranked by the gap rule enter with a
 **pre-open SELL LIMIT** at `prev_close × (1 − 0.75%)`, rounded up to the tick
-(unfilled orders are cancelled at 09:15). The stop is a buy-stop at entry + 0.75 × the 14-day ATR,
+(unfilled orders are cancelled at 09:15; `GapReversalConfig.entry_limit_for`). The stop is a buy-stop at entry + 0.75 × the 14-day ATR,
 and the position is covered at 15:15. A gradient-boosted **ranker** orders the candidates.
 It is promoted only on walk-forward evidence and guarded by a live paired record against the plain gap rule.
 A paper book records every session from official NSE bars, and the system learns from it every day.
