@@ -20,6 +20,7 @@ row for the session being ranked and builds exactly the same columns for it.
 """
 from __future__ import annotations
 
+import functools
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -28,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from nse_intraday_ai import nse_bhav, nse_extra, nse_fo, nse_preopen
+from nse_intraday_ai import nse_bhav, nse_corp, nse_extra, nse_fo, nse_preopen
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "candles.sqlite3"
@@ -51,6 +52,15 @@ MARKET_SERIES = {
 ADRS = {"INFY": "INFY", "WIT": "WIPRO", "HDB": "HDFCBANK", "IBN": "ICICIBANK", "RDY": "DRREDDY"}
 META_COLUMNS = ["turn_rank", "spread_bps", "val20_cr", "sector"]
 TARGETS = ["short_bps", "long_bps", "intra_bps"]
+# Corporate-event (catalyst) features from nse_corp, plus the gap's size against
+# the stock's own overnight volatility.  News-driven gaps tend to drift and
+# unexplained ones to reverse (Chan 2003; Savor 2012).  NaN where the corp
+# cache does not cover the window, so the panel builds without it.
+CORP_FEATURES = tuple(nse_corp.FEATURES) + ("gap1_z",)
+# Features that are built but kept OUT of the live models until a walk-forward
+# A/B (scripts/compare_rankers.py, paired t >= 3 after Holm) shows they help.
+# pipeline.weekly() excludes these; empty the tuple to adopt them.
+UNVALIDATED_FEATURES: tuple[str, ...] = CORP_FEATURES
 
 
 @dataclass
@@ -62,6 +72,7 @@ class Inputs:
     sectors: dict[str, str] = field(default_factory=dict)
     extra: pd.DataFrame | None = None               # MWPL crowding, bans, short sales
     preopen: pd.DataFrame | None = None             # archived pre-open auction snapshots
+    corp: nse_corp.CorpEvents | None = None         # board meetings, results, announcements
 
 
 # ── loading ─────────────────────────────────────────────────────────────────
@@ -107,6 +118,15 @@ def load_participant(flows: Path = FLOWS) -> pd.DataFrame:
     return frame[~frame.index.duplicated()]
 
 
+def load_corp(start: date, end: date) -> nse_corp.CorpEvents | None:
+    """Corporate events for [start, end]; None (features NaN) if the cache is unusable."""
+    try:
+        return nse_corp.load(start, end)
+    except Exception as exc:                                  # noqa: BLE001 — never break the panel
+        print(f"features: corp events unavailable ({type(exc).__name__}: {exc}); corp features NaN")
+        return None
+
+
 def load_inputs(start: date, end: date) -> Inputs:
     sectors = {}
     if SECTORS_CSV.exists():
@@ -120,6 +140,7 @@ def load_inputs(start: date, end: date) -> Inputs:
         sectors=sectors,
         extra=nse_extra.load(start, end),
         preopen=nse_preopen.load_archive(start, end),
+        corp=load_corp(start, end),
     )
 
 
@@ -155,6 +176,17 @@ PREOPEN_FEATURES = ("po_imbalance", "po_ato_imbalance", "po_auction_rel")
 MIN_PREOPEN_SESSIONS = 120
 
 
+def _quiet_numpy(fn):
+    """log(0) / 0-division inside build() are expected (they become NaN or inf,
+    and inf is turned into NaN on the way out); keep them out of the logs."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+@_quiet_numpy
 def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = None,
           min_price: float = 50.0, stop_atr: float = STOP_ATR, prefilter: int = 600,
           with_open: bool = False, opens: pd.DataFrame | None = None,
@@ -227,6 +259,9 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
     f["atr_pct"] = lag(atrp)
     f["vol20"] = lag(r.rolling(20, min_periods=10).std())
     f["gap1_atr"] = f["gap1"] / f["atr_pct"]
+    # Same gap, scaled by the stock's own overnight volatility over the 60
+    # sessions that ended with it (all known before t).
+    f["gap1_z"] = f["gap1"] / lag(gap.rolling(60, min_periods=20).std()).replace(0, np.nan)
     f["range1"] = lag((h - l) / c)
     f["clv1"] = lag(((c - l) - (h - c)) / (h - l).replace(0, np.nan))
     f["upwick1"] = lag((h - np.maximum(o, c)) / (h - l).replace(0, np.nan))
@@ -278,6 +313,11 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
         runs[i] = np.where(arr[i] == 1, runs[i - 1] + 1, 0)
     runs[0] = np.where(arr[0] == 1, 1, 0)
     f["gap_streak"] = lag(pd.DataFrame(np.minimum(runs, 10), index=up_gap.index, columns=up_gap.columns))
+
+    # Catalysts (nse_corp): results / filings in the window that produced gap1,
+    # the results calendar, exchange "unexplained move" queries.  Only events
+    # public before 08:45 on t; NaN where the cache does not cover the window.
+    f.update(nse_corp.corp_features(inputs.corp, sessions, symbols))
 
     # Effective spread (Abdi & Ranaldo 2017) from close/high/low, causal: the
     # evaluator's liquidity cost, never a model input.
@@ -443,6 +483,11 @@ def build(inputs: Inputs, *, universe: int = 400, live_session: date | None = No
     m = mkt.reindex(out.index.get_level_values("session")).astype("float32")
     for col in m.columns:
         out[col] = m[col].to_numpy()
+    # +/-inf (log of a zero OI or turnover, ratios over zero) would poison the
+    # tree binning; the models treat NaN as "missing", which is what it is.
+    num = [c for c in out.columns if out[c].dtype.kind == "f"]
+    out[num] = out[num].replace([np.inf, -np.inf], np.nan)
+    out = out.copy()                                   # de-fragment before adding targets
     if live_session is None:
         stop = stop_atr * atrp.shift(1)
         short = ((o - c) / o * 1e4).where(~(h >= o * (1 + stop)), -stop * 1e4)
