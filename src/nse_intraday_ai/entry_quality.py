@@ -155,6 +155,59 @@ _NORM = {
     "crude": (0.0, 0.55),
 }
 
+from dataclasses import field
+
+@dataclass
+class MacroNormState:
+    """Rolling exponentially-weighted normalization for macro alignment scores.
+    
+    Replaces the fixed _NORM constants with adaptive estimates that track
+    regime shifts in macro volatility. Uses EWMA with 60-day halflife.
+    """
+    alpha: float = 1 - 0.5 ** (1 / 60)  # 60-day halflife decay
+    # Running EWMA variance estimates (initialized from study values)
+    ew_var: dict[str, float] = field(default_factory=lambda: {
+        "nifty": 0.18**2, "inr": 0.09**2, "crude": 0.55**2
+    })
+    ew_mean: dict[str, float] = field(default_factory=lambda: {
+        "nifty": 0.0, "inr": 0.0, "crude": 0.0
+    })
+    n_updates: int = 0
+    
+    def update(self, key: str, value: float) -> None:
+        if not np.isfinite(value):
+            return
+        old_mean = self.ew_mean[key]
+        self.ew_mean[key] = (1 - self.alpha) * old_mean + self.alpha * value
+        # Welford-like EWMA variance update
+        self.ew_var[key] = (1 - self.alpha) * self.ew_var[key] + self.alpha * (value - old_mean) * (value - self.ew_mean[key])
+        self.n_updates += 1
+    
+    def get_norm(self, key: str) -> tuple[float, float]:
+        """Return (mean, sd) for the given macro component.
+        
+        Uses a floor on sd to prevent division by near-zero during
+        low-volatility regimes.
+        """
+        # Floor at 50% of the study's original sd to prevent gate collapse
+        floors = {"nifty": 0.09, "inr": 0.045, "crude": 0.275}
+        sd = max(np.sqrt(max(self.ew_var[key], 1e-12)), floors.get(key, 0.01))
+        return self.ew_mean[key], sd
+    
+    def to_dict(self) -> dict:
+        return {"ew_var": self.ew_var, "ew_mean": self.ew_mean, "n_updates": self.n_updates}
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "MacroNormState":
+        state = cls()
+        if "ew_var" in d:
+            state.ew_var = d["ew_var"]
+        if "ew_mean" in d:
+            state.ew_mean = d["ew_mean"]
+        if "n_updates" in d:
+            state.n_updates = d["n_updates"]
+        return state
+
 
 def macro_alignment(
     side: str,
@@ -162,6 +215,7 @@ def macro_alignment(
     nifty_change_pct: float | None,
     usdinr_change_pct: float | None,
     crude_change_pct: float | None,
+    norm_state: MacroNormState | None = None,
 ) -> MacroAlignment:
     """Alignment score for one trade side from the three surviving inputs."""
     if side not in ("LONG", "SHORT"):
@@ -180,7 +234,11 @@ def macro_alignment(
     for key, value in (("nifty", nifty), ("inr", inr), ("crude", crude)):
         if value is None:
             continue
-        mu, sd = _NORM[key]
+        if norm_state is not None:
+            norm_state.update(key, value)
+            mu, sd = norm_state.get_norm(key)
+        else:
+            mu, sd = _NORM[key]
         score += float(np.clip((value - mu) / sd, -3, 3))
         coverage += 1
     return MacroAlignment(nifty, inr, crude, score, coverage)
@@ -241,10 +299,18 @@ def passes_entry_gate(
             f"(need vol_z>={MIN_VOLUME_Z} and impulse>={MIN_IMPULSE_ATR}ATR)",
             quality, macro,
         )
-    if macro is None or (config.require_macro_coverage and not macro.is_complete):
+    if macro is None:
         return GateResult(False, "macro panel incomplete", quality, macro)
+    
+    reason_note = ""
+    if config.require_macro_coverage:
+        if macro.coverage < 2:
+            return GateResult(False, "macro panel incomplete", quality, macro)
+        elif macro.coverage == 2:
+            reason_note = " (macro coverage 2/3)"
+
     if macro.score < config.min_macro_score:
         return GateResult(
-            False, f"macro against the trade: {macro.describe()}", quality, macro
+            False, f"macro against the trade: {macro.describe()}{reason_note}", quality, macro
         )
-    return GateResult(True, f"{quality.describe()} | {macro.describe()}", quality, macro)
+    return GateResult(True, f"{quality.describe()} | {macro.describe()}{reason_note}", quality, macro)

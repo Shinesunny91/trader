@@ -99,15 +99,14 @@ class ScanCycle:
 
 
 def _load_state(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
+    from nse_intraday_ai.atomic_io import atomic_read_json
+    return atomic_read_json(path, default={})
 
 
 def _save_state(state: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2))
+    from nse_intraday_ai.atomic_io import atomic_write_json
+    atomic_write_json(path, state)
 
 
 def universe_symbols(universe: str) -> list[str]:

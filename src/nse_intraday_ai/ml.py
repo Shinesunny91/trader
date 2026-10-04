@@ -108,12 +108,9 @@ def purged_walk_forward(
         if len(block) == 0:
             continue
         t0, t1 = int(s[block].min()), int(e[block].max())
-        # Train = everything that both starts and ENDS before the test window,
-        # minus an embargo tail after it.
-        candidate = (e < t0) | (s > t1 + embargo)
-        # Never train on anything starting after the test window in a
-        # walk-forward — that is future data.
-        candidate &= s < t0
+        # Train = everything whose label window ends before the test window
+        # starts, with an embargo gap to prevent autoregressive leakage.
+        candidate = (e < t0) & (s < t0 - embargo)
         train = np.where(candidate)[0]
         if len(train) < min_train:
             continue
@@ -220,7 +217,9 @@ def deflated_sharpe(returns: np.ndarray, n_trials: int) -> float:
     euler = 0.5772156649
     z = ((1 - euler) * _norm_ppf(1 - 1.0 / n_trials)
          + euler * _norm_ppf(1 - 1.0 / (n_trials * np.e)))
-    return float(sharpe - z * r.std(ddof=1) / r.std(ddof=1) / np.sqrt(len(r)) * np.sqrt(252))
+    # DSR = observed Sharpe − E[max of n_trials normals] × SE(Sharpe).
+    # SE(Sharpe) ≈ 1/√N for iid returns (Lo 2002).
+    return float(sharpe - z / np.sqrt(len(r)))
 
 
 def _norm_ppf(p: float) -> float:

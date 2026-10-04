@@ -32,16 +32,29 @@ class EventWindow:
 
 
 # Weekly / monthly recurring releases, IST clock.
-# NOTE: US releases shift one hour with US daylight saving; 18:00 IST is the
-# summer time.  A wrongly-timed window costs at most a mild penalty for 45
-# minutes, so the simple fixed-clock model is acceptable.
+# NOTE: US releases are scheduled in US Eastern time and shift with daylight
+# saving.  The event time is now computed DST-aware via _us_release_ist_minute.
 _EIA = EventWindow("EIA crude inventories", {"energy": 12.0, "*": 4.0})
 _CLAIMS = EventWindow("US jobless claims", {"*": 6.0})
 _NFP = EventWindow("US non-farm payrolls", {"precious": 12.0, "*": 8.0})
 
+_US_EASTERN = ZoneInfo("US/Eastern")
+
 
 def _is_first_friday(ts: pd.Timestamp) -> bool:
     return ts.weekday() == 4 and ts.day <= 7
+
+
+def _us_release_ist_minute(ts: pd.Timestamp, us_local_hour: int) -> int:
+    """Convert a US Eastern local hour to IST minute-of-day, DST-aware.
+
+    EIA is 10:30 ET, NFP and Claims are 8:30 ET.  During EDT (Mar-Nov)
+    the IST offset is 9.5 h; during EST (Nov-Mar) it is 10.5 h.
+    """
+    us_dt = ts.to_pydatetime().astimezone(_US_EASTERN)
+    offset_hours = (IST.utcoffset(us_dt) - _US_EASTERN.utcoffset(us_dt)).total_seconds() / 3600
+    ist_hour = us_local_hour + offset_hours
+    return int(ist_hour * 60 + 30)  # +30 for the :30 minute mark of US releases
 
 
 def _in_window(minute_of_day: int, event_minute: int) -> bool:
@@ -50,12 +63,15 @@ def _in_window(minute_of_day: int, event_minute: int) -> bool:
 
 def _active_commodity_event(ts: pd.Timestamp) -> EventWindow | None:
     minute = ts.hour * 60 + ts.minute
-    if ts.weekday() == 2 and _in_window(minute, 20 * 60):        # Wed 20:00 IST
-        return _EIA
-    if _is_first_friday(ts) and _in_window(minute, 18 * 60):     # first Fri 18:00 IST
-        return _NFP
-    if ts.weekday() == 3 and _in_window(minute, 18 * 60):        # Thu 18:00 IST
-        return _CLAIMS
+    if ts.weekday() == 2:                                         # Wed — EIA at 10:30 ET
+        if _in_window(minute, _us_release_ist_minute(ts, 10)):
+            return _EIA
+    if _is_first_friday(ts):                                      # 1st Fri — NFP at 8:30 ET
+        if _in_window(minute, _us_release_ist_minute(ts, 8)):
+            return _NFP
+    if ts.weekday() == 3:                                         # Thu — Claims at 8:30 ET
+        if _in_window(minute, _us_release_ist_minute(ts, 8)):
+            return _CLAIMS
     return None
 
 

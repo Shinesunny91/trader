@@ -20,11 +20,8 @@ OUT = G.OUT_DIR
 
 
 def _read_json(name: str) -> dict | None:
-    path = OUT / name
-    try:
-        return json.loads(path.read_text()) if path.exists() else None
-    except (OSError, ValueError):
-        return None
+    from nse_intraday_ai.atomic_io import atomic_read_json
+    return atomic_read_json(OUT / name, default=None)
 
 
 def _picks_table(payload: dict) -> pd.DataFrame:

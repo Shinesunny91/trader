@@ -119,9 +119,8 @@ class ShadowLearner:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        from nse_intraday_ai.atomic_io import sqlite_wal_connect
+        return sqlite_wal_connect(self.db_path)
 
     def _init_db(self) -> None:
         with self._connect() as conn:

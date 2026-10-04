@@ -159,7 +159,7 @@ class MetaModel:
     cost_bps: float
     trained_at: str
     n_events: int
-    feature_names: list[float] = field(default_factory=lambda: list(FEATURE_NAMES))
+    feature_names: list[str] = field(default_factory=lambda: list(FEATURE_NAMES))
     validation: dict = field(default_factory=dict)
 
     def score(self, features: list[float]) -> float:
@@ -183,11 +183,15 @@ class MetaModel:
             "trained_at": self.trained_at, "n_events": self.n_events,
             "feature_names": self.feature_names, "validation": self.validation,
         }
-        Path(path).write_text(json.dumps(payload, indent=2))
+        from nse_intraday_ai.atomic_io import atomic_write_json
+        atomic_write_json(path, payload)
 
     @classmethod
     def load(cls, path: Path | str) -> "MetaModel":
-        payload = json.loads(Path(path).read_text())
+        from nse_intraday_ai.atomic_io import atomic_read_json
+        payload = atomic_read_json(path)
+        if payload is None:
+            raise FileNotFoundError(f"meta model file not found: {path}")
         model = cls(**payload)
         if list(model.feature_names) != list(FEATURE_NAMES):
             raise ValueError(

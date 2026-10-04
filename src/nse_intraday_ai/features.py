@@ -45,6 +45,9 @@ MARKET_SERIES = {
     "GC=F": "gold", "HG=F": "copper", "^TNX": "us10y",
 }
 # New York ADR -> NSE symbol: the ADR trades after the NSE close.
+# Only ADRs that are still listed AND have an NSE twin belong here (Tata
+# Motors, Vedanta and Azure Power ADRs were delisted; MakeMyTrip, Sify and
+# WNS have no NSE listing).
 ADRS = {"INFY": "INFY", "WIT": "WIPRO", "HDB": "HDFCBANK", "IBN": "ICICIBANK", "RDY": "DRREDDY"}
 META_COLUMNS = ["turn_rank", "spread_bps", "val20_cr", "sector"]
 TARGETS = ["short_bps", "long_bps", "intra_bps"]

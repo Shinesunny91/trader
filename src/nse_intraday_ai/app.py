@@ -97,12 +97,8 @@ def _send_new_signal_notifications(recommendations: list) -> None:
     """Fire notify-send for any actionable signal not yet notified by the daemon."""
     if (ROOT / "data" / "notifications_paused").exists():
         return
-    state: dict = {}
-    if _DAEMON_STATE_PATH.exists():
-        try:
-            state = json.loads(_DAEMON_STATE_PATH.read_text())
-        except Exception:
-            pass
+    from nse_intraday_ai.atomic_io import atomic_read_json
+    state = atomic_read_json(_DAEMON_STATE_PATH, default={})
     today = datetime.now(_IST).date().isoformat()
     notified = {k: v for k, v in state.get("notified", {}).items() if v.get("date") == today}
     now_str = datetime.now(_IST).strftime("%H:%M")
@@ -127,7 +123,8 @@ def _send_new_signal_notifications(recommendations: list) -> None:
         changed = True
     if changed:
         state["notified"] = notified
-        _DAEMON_STATE_PATH.write_text(json.dumps(state, indent=2))
+        from nse_intraday_ai.atomic_io import atomic_write_json
+        atomic_write_json(_DAEMON_STATE_PATH, state)
 
 
 st.set_page_config(page_title="NSE Intraday Signal Lab", page_icon="INR", layout="wide")

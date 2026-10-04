@@ -119,14 +119,13 @@ def notify(title: str, body: str, urgency: str = "normal") -> None:
 # ── Signal dedup state ────────────────────────────────────────────────────
 
 def _load_state() -> dict:
-    try:
-        return json.loads(STATE_PATH.read_text())
-    except Exception:
-        return {"notified": {}}
+    from nse_intraday_ai.atomic_io import atomic_read_json
+    return atomic_read_json(STATE_PATH, default={"notified": {}})
 
 
 def _save_state(state: dict) -> None:
-    STATE_PATH.write_text(json.dumps(state, indent=2))
+    from nse_intraday_ai.atomic_io import atomic_write_json
+    atomic_write_json(STATE_PATH, state)
 
 
 def _signal_key(symbol: str, side: str, entry: float) -> str:

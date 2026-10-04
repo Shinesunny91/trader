@@ -37,6 +37,7 @@ DEFAULT_EXCLUDE = ("mwpl_util1", "ban_today", "short_frac", "x_banned", "x_mwpl_
 
 @dataclass(frozen=True)
 class RankerConfig:
+    ranker_type: str = "hgb"  # "hgb" (HistGradientBoosting) or "lgbm_rank" (LightGBM LambdaRank)
     target: str = "short_bps"
     target_kind: str = "demean"        # demean | rank | raw
     clip_bps: float = 800.0
@@ -47,6 +48,7 @@ class RankerConfig:
     l2_regularization: float = 1.0
     max_features: float = 0.6
     seeds: tuple[int, ...] = (0,)
+    seeds_multi: tuple[int, ...] = (0, 42, 137)
     # Recency weighting: a session's weight halves every `halflife_years` back
     # from the newest training session (None = every session counts equally).
     halflife_years: float | None = None
@@ -87,16 +89,54 @@ class Ranker:
         y = make_target(panel, config).to_numpy()
         if sample_weight is None and config.halflife_years:
             d = pd.to_datetime(panel.index.get_level_values("session"))
-            age = (d.max() - d).days.to_numpy() / 365.25
+            age = (d.max() - d).dt.days.to_numpy() / 365.25
             sample_weight = 0.5 ** (age / config.halflife_years)
         models = []
         for seed in config.seeds:
-            m = HistGradientBoostingRegressor(
-                max_iter=config.max_iter, learning_rate=config.learning_rate,
-                max_leaf_nodes=config.max_leaf_nodes, min_samples_leaf=config.min_samples_leaf,
-                l2_regularization=config.l2_regularization, max_features=config.max_features,
-                early_stopping=False, random_state=seed)
-            m.fit(X, y, sample_weight=sample_weight)
+            if config.ranker_type == "lgbm_rank":
+                import lightgbm as lgb
+                sessions = panel.index.get_level_values("session")
+                group_sizes = sessions.value_counts().sort_index().to_numpy()
+                m = lgb.LGBMRanker(
+                    objective='lambdarank',
+                    metric='ndcg',
+                    n_estimators=config.max_iter,
+                    learning_rate=config.learning_rate,
+                    max_depth=-1,
+                    num_leaves=config.max_leaf_nodes,
+                    min_child_samples=config.min_samples_leaf,
+                    reg_lambda=config.l2_regularization,
+                    subsample=config.max_features,
+                    subsample_freq=1,
+                    random_state=seed,
+                    n_jobs=-1,
+                    verbose=-1,
+                    eval_at=[8],
+                    label_gain=None,
+                )
+                m.fit(X, y, group=group_sizes, sample_weight=sample_weight)
+            elif config.ranker_type == "lgbm_reg":
+                import lightgbm as lgb
+                m = lgb.LGBMRegressor(
+                    n_estimators=config.max_iter,
+                    learning_rate=config.learning_rate,
+                    num_leaves=config.max_leaf_nodes,
+                    min_child_samples=config.min_samples_leaf,
+                    reg_lambda=config.l2_regularization,
+                    subsample=config.max_features,
+                    subsample_freq=1,
+                    random_state=seed,
+                    n_jobs=-1,
+                    verbose=-1,
+                )
+                m.fit(X, y, sample_weight=sample_weight)
+            else:
+                m = HistGradientBoostingRegressor(
+                    max_iter=config.max_iter, learning_rate=config.learning_rate,
+                    max_leaf_nodes=config.max_leaf_nodes, min_samples_leaf=config.min_samples_leaf,
+                    l2_regularization=config.l2_regularization, max_features=config.max_features,
+                    early_stopping=False, random_state=seed)
+                m.fit(X, y, sample_weight=sample_weight)
             models.append(m)
         last = max(panel.index.get_level_values("session"))
         return cls(config=config, features=feats, models=models, trained_through=str(last),
@@ -108,6 +148,21 @@ class Ranker:
             raise KeyError(f"frame lacks {len(missing)} model features, e.g. {missing[:5]}")
         X = frame[self.features].to_numpy(np.float32)
         return np.mean([m.predict(X) for m in self.models], axis=0)
+
+    def feature_importance(self) -> pd.Series:
+        """Average feature importance across ensemble models (sorted descending).
+
+        Works with sklearn HistGBR, LightGBM Regressor, and LGBMRanker — all
+        expose `.feature_importances_`.  For weekly feature health reports.
+        """
+        importances = []
+        for m in self.models:
+            if hasattr(m, "feature_importances_"):
+                importances.append(m.feature_importances_)
+        if not importances:
+            return pd.Series(dtype=float)
+        avg = np.mean(importances, axis=0)
+        return pd.Series(avg, index=self.features).sort_values(ascending=False)
 
     # ── persistence ────────────────────────────────────────────────────────
     def save(self, directory: Path | None = None) -> Path:
@@ -179,7 +234,7 @@ def walk_forward(panel: pd.DataFrame, config: RankerConfig = RankerConfig(), *,
             continue
         weight = None
         if halflife_years or config.halflife_years:
-            age = (a - d[train]).days.to_numpy() / 365.25
+            age = (a - d[train]).dt.days.to_numpy() / 365.25
             weight = 0.5 ** (age / (halflife_years or config.halflife_years))
         model = Ranker.fit(panel[train], config, sample_weight=weight)
         out[test] = model.score(panel[test])

@@ -94,6 +94,12 @@ def _publish(session: date | None, *, fetch: bool) -> tuple[date, date, list[G.P
 def cmd_picks(args) -> None:
     wait_for_clock()
     session = date.fromisoformat(args.date) if args.date else None
+    if session is None:
+        from nse_intraday_ai.nse_calendar import is_trading_day
+        today = datetime.now(IST).date()
+        if today.weekday() < 5 and not is_trading_day(today):
+            print(f"{today}: NSE holiday — no list published")
+            return
     try:
         session, last, picks, info = _publish(session, fetch=not args.no_fetch)
     except G.StaleDataError as exc:
@@ -347,8 +353,9 @@ def cmd_backtest(args) -> None:
               f"max DD {dd['max_drawdown_pct']}%")
         print("  " + " ".join(f"{y}:{v:+.1f}" for y, v in dd["by_year"].items()))
     if args.save:
+        from nse_intraday_ai.atomic_io import atomic_write_json
         OUT.mkdir(parents=True, exist_ok=True)
-        BACKTEST.write_text(json.dumps(payload, indent=2, default=str))
+        atomic_write_json(BACKTEST, payload)
         print(f"\n-> {BACKTEST}")
 
 

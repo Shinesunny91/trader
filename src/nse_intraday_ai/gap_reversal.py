@@ -278,8 +278,12 @@ def features(daily: dict[str, pd.DataFrame], config: GapReversalConfig = GapReve
 
 
 def select(daily: dict[str, pd.DataFrame], session: date,
-           config: GapReversalConfig = GapReversalConfig()) -> list[Pick]:
+           config: GapReversalConfig = GapReversalConfig(),
+           excluded_out: list[dict] | None = None) -> list[Pick]:
     """The ranked short list for `session`, from bars strictly before it."""
+    import logging
+    from nse_intraday_ai.earnings_calendar import get_earnings_exclusions
+
     history = {k: v[v.index < session] for k, v in daily.items()}
     if history["close"].empty:
         return []
@@ -296,6 +300,16 @@ def select(daily: dict[str, pd.DataFrame], session: date,
     table = table.sort_values("turnover", ascending=False).head(config.universe_size)
     table = table.dropna(subset=["gap", "atr"])
     table = table[table["atr"] > 0].sort_values("gap", ascending=False)
+
+    candidates = table.index.tolist()
+    exclusions = get_earnings_exclusions(candidates, session)
+    if exclusions:
+        logger = logging.getLogger(__name__)
+        logger.info(f"Excluding stocks near earnings for session {session}: {exclusions}")
+        if excluded_out is not None:
+            for ex in exclusions:
+                excluded_out.append({"symbol": ex, "reason": "earnings announcement within 2 days"})
+        table = table[~table.index.isin(exclusions)]
 
     per_position = config.capital / config.picks
     picks: list[Pick] = []
@@ -563,25 +577,26 @@ PICKS_PATH = OUT_DIR / "picks.json"
 
 
 def next_session(now: pd.Timestamp | None = None) -> date:
-    """Today if the session has not closed yet, else the next weekday.
+    """Today if it is a trading day whose session has not closed, else the next one.
 
-    Exchange holidays are not known here; the `levels` step finds out (no
-    opening bar) and says so.
+    Exchange holidays come from `nse_calendar` (NSE holiday master, cached,
+    plus bhavcopy holiday markers).
     """
+    from nse_intraday_ai.nse_calendar import is_trading_day, next_trading_day
+
     now = pd.Timestamp.now(tz=IST) if now is None else now
     day = now.date()
-    if now.weekday() < 5 and (now.hour, now.minute) < (15, 30):
+    if is_trading_day(day) and (now.hour, now.minute) < (15, 30):
         return day
-    day = (pd.Timestamp(day) + pd.offsets.BDay(1)).date()
-    return day
+    return next_trading_day(day)
 
 
 def read_picks(path: Path | None = None) -> dict | None:
     """The saved pick-list payload as written, whatever session it is for."""
-    import json
+    from nse_intraday_ai.atomic_io import atomic_read_json
 
     path = PICKS_PATH if path is None else path
-    return json.loads(path.read_text()) if path.exists() else None
+    return atomic_read_json(path) if path.exists() else None
 
 
 def save_picks(session: date, picks: list[Pick], config: GapReversalConfig = GapReversalConfig(),
@@ -684,6 +699,7 @@ def publish_picks(session: date | None = None, config: GapReversalConfig = GapRe
                                  "(network, clock or Yahoo outage)")
     last = check_fresh(symbols, session)
     daily = load_daily(symbols, since=(pd.Timestamp(session) - pd.Timedelta(days=120)).date().isoformat())
-    picks = select(daily, session, config)
-    save_picks(session, picks, config, based_on=last.isoformat())
+    excluded_list = []
+    picks = select(daily, session, config, excluded_out=excluded_list)
+    save_picks(session, picks, config, based_on=last.isoformat(), excluded=excluded_list)
     return session, last, picks

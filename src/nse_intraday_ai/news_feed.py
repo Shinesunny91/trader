@@ -392,7 +392,8 @@ def archive(items: list[NewsItem], db_path: Path | str = NEWS_DB) -> int:
         return 0
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(path))
+    from nse_intraday_ai.atomic_io import sqlite_wal_connect
+    con = sqlite_wal_connect(str(path))
     try:
         con.executescript(_SCHEMA)
         now = datetime.now(tz=IST).isoformat(timespec="seconds")
@@ -540,7 +541,8 @@ def recent_archive(
     if not path.exists():
         return []
     since = (datetime.now(tz=IST) - timedelta(hours=hours)).isoformat()
-    con = sqlite3.connect(str(path))
+    from nse_intraday_ai.atomic_io import sqlite_wal_connect
+    con = sqlite_wal_connect(str(path))
     try:
         con.row_factory = sqlite3.Row
         if symbol:

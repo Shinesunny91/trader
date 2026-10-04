@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from nse_intraday_ai.atomic_io import atomic_read_json, atomic_write_json
 from nse_intraday_ai.risk import RiskConfig
 from nse_intraday_ai.strategies import EnsembleConfig
 
@@ -91,12 +92,7 @@ DEFAULTS = DEFAULTS_BY_UNIVERSE["nse"]
 
 
 def _read_file(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            pass
-    return {}
+    return atomic_read_json(path, default={})
 
 
 def load(universe: str = "nse", path: Path | str | None = None) -> dict:
@@ -124,8 +120,7 @@ def save(cfg: dict, universe: str = "nse", path: Path | str | None = None) -> No
     if existing and not any(k in existing for k in DEFAULTS_BY_UNIVERSE):
         existing = {"nse": existing}  # migrate legacy flat file in place
     existing[universe] = cfg
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(existing, indent=2))
+    atomic_write_json(p, existing)
 
 
 def to_risk_config(cfg: dict) -> RiskConfig:

@@ -212,7 +212,8 @@ def load_vwap_breadth_from_cache(
     import sqlite3
 
     frames: dict[str, pd.DataFrame] = {}
-    con = sqlite3.connect(str(db_path))
+    from nse_intraday_ai.atomic_io import sqlite_wal_connect
+    con = sqlite_wal_connect(str(db_path))
     try:
         for symbol in symbols:
             df = pd.read_sql_query(
@@ -283,7 +284,8 @@ def build_context_series_from_cache(
 
     wanted = symbols or EQUITY_CONTEXT_SYMBOLS
     frames: dict[str, pd.DataFrame] = {}
-    con = sqlite3.connect(str(db_path))
+    from nse_intraday_ai.atomic_io import sqlite_wal_connect
+    con = sqlite_wal_connect(str(db_path))
     try:
         for symbol in wanted:
             df = pd.read_sql_query(

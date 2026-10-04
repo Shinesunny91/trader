@@ -323,5 +323,6 @@ def weekly(*, eval_years: float = 2.0, min_t: float = 2.0, log=print) -> dict:
               "promoted": verdicts["ranker"]["promoted"], "challenger": verdicts["ranker"]["challenger"],
               **evidence}
     REPORTS.mkdir(parents=True, exist_ok=True)
-    (REPORTS / "weekly_report.json").write_text(json.dumps(report, indent=2, default=str))
+    from nse_intraday_ai.atomic_io import atomic_write_json
+    atomic_write_json(REPORTS / "weekly_report.json", report)
     return report

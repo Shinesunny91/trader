@@ -133,11 +133,12 @@ class SignalModel:
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
+        from nse_intraday_ai.atomic_io import atomic_write_json
+        atomic_write_json(path, {
             "mu": self.mu, "sd": self.sd, "feature_names": self.feature_names,
             "trained_at": self.trained_at, "n_events": self.n_events,
             "barrier": self.barrier, "validation": self.validation,
-        }, indent=2))
+        })
         with path.with_suffix(".forest.pkl").open("wb") as handle:
             pickle.dump(self._forest, handle)
         if self._hgb is not None:
@@ -149,7 +150,10 @@ class SignalModel:
         import pickle
 
         path = Path(path)
-        payload = json.loads(path.read_text())
+        from nse_intraday_ai.atomic_io import atomic_read_json
+        payload = atomic_read_json(path)
+        if payload is None:
+            raise FileNotFoundError(f"signal model file not found: {path}")
         if list(payload["feature_names"]) != ALL_FEATURES:
             raise ValueError(
                 f"{path} was trained on different features "
@@ -204,7 +208,9 @@ def train(
                 is_2026 = (ts.dt.year >= 2026).to_numpy()
                 weights = np.where(is_2026, decay * 1.5, decay)
                 weights = weights / (weights.mean() if weights.mean() > 0 else 1.0)
-        except Exception:
+        except (KeyError, ValueError, TypeError) as exc:
+            import warnings
+            warnings.warn(f"signal_model: recency weighting failed ({exc}), using uniform weights")
             weights = np.ones(len(frame), dtype=float)
 
     Z = (X - mu) / sd
@@ -453,7 +459,9 @@ def score_and_rank_scan_results(
         try:
             model_preds = model.score(df_feats)
             scores = composite_scores + np.clip(model_preds / 10.0, -2.0, 2.0)
-        except Exception:
+        except (ValueError, KeyError, AttributeError) as exc:
+            import warnings
+            warnings.warn(f"signal_model: model scoring failed ({exc}), using composite only")
             scores = composite_scores
     else:
         scores = composite_scores
@@ -471,7 +479,9 @@ def score_and_rank_scan_results(
             ret_mat = return_matrix(frames_dict)
             if not ret_mat.empty:
                 corr_matrix = rolling_corr(ret_mat, window=60, min_periods=10)
-        except Exception:
+        except (ImportError, ValueError, KeyError) as exc:
+            import warnings
+            warnings.warn(f"signal_model: correlation computation failed ({exc})")
             corr_matrix = pd.DataFrame()
 
     # Attach preliminary scores

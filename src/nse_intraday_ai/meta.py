@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+from nse_intraday_ai.atomic_io import atomic_write_json, atomic_read_json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,24 +49,32 @@ class MetaState:
     threshold_bps: float = 400.0     # alarm when the accumulated shortfall exceeds this
     cusum: float = 0.0
     alarm: bool = False
+    alarm_session: str | None = None
+    alarm_sessions_elapsed: int = 0
+    cautious_mode: bool = False
+    recovery_window: int = 10
+    cautious_returns: list[float] = field(default_factory=list)
     # paired daily record of each expert's own book (net bps/trade)
     track: list[dict] = field(default_factory=list)
     guard_window: int = 60
     guard_t: float = -2.0
 
+    @property
+    def position_size_multiplier(self) -> float:
+        return 0.6 if self.cautious_mode else 1.0
+
     # ── persistence ────────────────────────────────────────────────────────
     @classmethod
     def load(cls, path: Path | None = None) -> "MetaState":
         path = STATE if path is None else path      # resolved at call time, not import time
-        if not path.exists():
+        raw = atomic_read_json(path, default={})
+        if not raw:
             return cls()
-        raw = json.loads(path.read_text())
         return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
 
     def save(self, path: Path | None = None) -> None:
         path = STATE if path is None else path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), indent=2, default=str))
+        atomic_write_json(path, asdict(self))
 
     # ── the two mechanisms ─────────────────────────────────────────────────
     def normalised(self, experts: list[str]) -> dict[str, float]:
@@ -91,7 +100,21 @@ class MetaState:
         self.weights = {e: self.floor / n + (1 - self.floor) * v / total for e, v in w.items()}
         if book_return_bps is not None and math.isfinite(book_return_bps):
             self.cusum = max(0.0, self.cusum + (self.expected_bps - self.slack_bps) - book_return_bps)
-            self.alarm = self.cusum > self.threshold_bps
+            new_alarm = self.cusum > self.threshold_bps
+            if new_alarm and not self.alarm:
+                self.alarm_session = session
+                self.cautious_mode = True
+                self.alarm_sessions_elapsed = 0
+                self.cautious_returns = []
+            self.alarm = new_alarm
+            if self.cautious_mode:
+                self.alarm_sessions_elapsed += 1
+                self.cautious_returns.append(book_return_bps)
+                if self.alarm_sessions_elapsed >= self.recovery_window:
+                    if sum(self.cautious_returns) > 0:
+                        self.cusum = 0.0
+                        self.alarm = False
+                        self.cautious_mode = False
         self.updated_through = session
         self.history.append({"session": session, "weights": dict(self.weights),
                              "returns": expert_returns_bps, "book": book_return_bps,
@@ -149,11 +172,17 @@ def hedge_replay(scores: dict[str, pd.Series], outcome: pd.Series, *, k: int = 8
         w = state.normalised(names)
         combined = sum(w[n] * r[n].fillna(0.0) for n in names)
         top = combined.nlargest(k).index
-        out[day] = float(y.loc[top].mean()) - cost_bps
+        if top.empty or y.loc[top].isna().all():
+            out[day] = 0.0
+        else:
+            out[day] = float(y.loc[top].mean()) - cost_bps
         own = {}
         for n in names:
             pick = r[n].nlargest(k).index
-            own[n] = float(y.loc[pick].mean()) - cost_bps
+            if pick.empty or y.loc[pick].isna().all():
+                own[n] = 0.0
+            else:
+                own[n] = float(y.loc[pick].mean()) - cost_bps
         hist.append({"session": day, **w})
         state.update(str(day), own)
     return pd.Series(out).sort_index(), pd.DataFrame(hist).set_index("session")
