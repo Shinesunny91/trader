@@ -1,0 +1,10 @@
+[Unit]
+Description=Intraday NSE-500 monitor scan (snapshot, paper shadow board, gap-book stop alerts)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/trading-workspace
+ExecStart=%h/trading-workspace/.venv/bin/python %h/trading-workspace/scripts/intraday_monitor.py scan --push
+TimeoutStartSec=240
+Nice=5

@@ -69,7 +69,8 @@ flowchart LR
 | `costs` | Groww/NSE MIS round-trip cost model (brokerage, STT, exchange, SEBI, stamp, GST, slippage). |
 | `alerts` | ntfy push (topic from `NTFY_TOPIC` or the git-ignored `data/notify.json`); Telegram is optional. |
 | `atomic_io` | Atomic JSON writes and retrying reads, shared by every state file. |
-| `app`, `gap_reversal_ui` | Streamlit dashboard with four pages (Today, Performance, Model, About). Plotly charts with zoom, a unified-hover data cursor, units and CSV export. |
+| `intraday_monitor` | Live NIFTY-500 monitor (information only). `load_day` keeps completed 5-minute bars only; `snapshot` gives move, gap, relative volume vs a 20-session cumulative profile, breadth, highs/lows and near-circuit names. Paper strategies `orb60`, `gap_fade`, `vol_breakout` are pure functions graded at 13.3 bps (`grade`, `record_day`, `board_stats` with Holm). `gap_book_watch`/`gap_alerts` watch today's gap shorts against their stops. Writes `data/intraday/live.json`. |
+| `app`, `gap_reversal_ui`, `intraday_ui` | Streamlit dashboard "NSE Trading Desk": Gap book — Today, Intraday monitor, Performance, Model, About. Plotly charts with zoom, a unified-hover data cursor, units and CSV export. |
 
 Scripts (`scripts/`):
 
@@ -82,6 +83,7 @@ Scripts (`scripts/`):
 | `compare_rankers.py` | Production-faithful walk-forward A/B with Holm and DSR. |
 | `backfill_nse.py`, `backfill_corp.py` | History backfills. |
 | `ticket_api.py` | JSON API for the Android app. |
+| `intraday_monitor.py` | Subcommands `scan [--push] [--force]` (live NIFTY-500 + gap-book watch), `replay --date`, `board` (shadow-board stats). |
 
 ## 4. Daily data flow and schedule (systemd user timers, IST)
 
@@ -90,12 +92,15 @@ Scripts (`scripts/`):
 | 08:45 Mon–Fri | `nse-gap-picks` | Holiday check, then `refresh()` the NSE files, corporate events and global closes. `learn_from(previous session)` updates the guard and CUSUM. Features are built for today and ranked by the guarded expert. Shorts whose stop lies beyond the price band are dropped (reserves move up). Limits are attached and `picks.json` is written. Push. |
 | 09:10:30 | `nse-gap-final` | Fetch and archive the pre-open auction. If a promoted open model passes its guard, re-rank and push the final list. Otherwise the 08:45 list stands. |
 | 09:18 | `nse-gap-levels` | Push stop prices from the official opens; names that opened below their limit are marked NOT FILLED. |
+| every 5 min 09:20–15:45 | `nse-intraday-scan` | `intraday_monitor.py scan --push`: Yahoo 5-minute bars for NIFTY-500 + today's gap shorts → `data/intraday/live.json`. Phone alert (deduplicated per day in `alerts_YYYYMMDD.json`) only when a gap-book short hits or comes within 1% of its stop. After 15:15 the day's paper shadow-board trades are appended to `shadow_book.csv`. |
 | 15:40 | `nse-gap-record` | Record the session in `paper_book.csv` (5-minute path; `NO_FILL` rows for unfilled limits). |
 | 19:00 daily | `nse-gap-learn` | `learn.py --if-needed` retrains on Saturdays, on a drift alarm, or when no review exists. It runs `weekly()`: walk-forward over the last 2 years with quarterly refits, and promotes each model only if it beats its reference with paired t ≥ 2 and a positive edge. |
 | every 30 min | `nse-health` | `health_check.py`: failures exit 1, warnings exit 0. |
 | always | `nse-signal-lab` | Streamlit on :8501. |
 
 All timers use `Persistent=true`, so a job missed while the laptop was asleep runs at wake-up. The 08:45 list prints a LATE banner after 09:08.
+
+**Intraday shadow board.** The 2026-10 search (≈100 published intraday variants, `docs/research-log.md`) found none that survives costs. The three closest are run as a paper board only, labelled NOT VALIDATED, and never pushed as trades. A strategy becomes "eligible for review" only after ≥ 60 live sessions with a positive mean net of costs and Holm-adjusted p < 0.05; any promotion still needs a walk-forward study.
 
 ## 5. Threading and process model
 
@@ -120,7 +125,7 @@ All timers use `Persistent=true`, so a job missed while the laptop was asleep ru
 ## 8. Directory layout
 
 ```
-src/nse_intraday_ai/   package (18 modules)
+src/nse_intraday_ai/   package (22 modules)
 scripts/               CLIs run by systemd and by hand
 tests/                 pytest suite (unit + app smoke + script smoke)
 deploy/                install.sh + systemd units/timers

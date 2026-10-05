@@ -21,12 +21,13 @@ if str(_SRC) not in sys.path:          # `streamlit run` does not put src/ on th
     sys.path.insert(0, str(_SRC))
 
 from nse_intraday_ai import gap_reversal_ui as ui  # noqa: E402
+from nse_intraday_ai import intraday_ui  # noqa: E402
 
 ROOT = _SRC.parent
-APP_NAME = "NSE Gap-Reversal Book"
+APP_NAME = "NSE Trading Desk"
 DEVELOPER = "Shine"
-PAGES = {"📋 Today": ui.page_today, "📈 Performance": ui.page_performance,
-         "🧠 Model": ui.page_model, "ℹ️ About": None}
+PAGES = {"📋 Gap book — Today": ui.page_today, "📡 Intraday monitor": intraday_ui.page_intraday,
+         "📈 Performance": ui.page_performance, "🧠 Model": ui.page_model, "ℹ️ About": None}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -58,7 +59,11 @@ def page_about() -> None:
         "(or by the promoted ML ranker) and **short the top 8** at the 09:15 open, equal ₹ weight, MIS.\n"
         "- Each short carries a **buy-stop at fill + 0.75 × 14-day ATR** and is **covered at 15:15**.\n"
         "- The edge is the intraday give-back of overnight gains: +24.7 bps/trade net over ten years of daily "
-        "bars (t = 9.2); the walk-forward ML ranker added ~20 bps/trade over the rule (2024-10 → 2026-10).")
+        "bars (t = 9.2); the walk-forward ML ranker added ~20 bps/trade over the rule (2024-10 → 2026-10).\n\n"
+        "**Intraday monitor** — a live NIFTY 500 view every 5 minutes (stocks in play, circuits, "
+        "announcements, gap-book stop alerts) and a paper *shadow board* of three unvalidated intraday "
+        "strategies. About 100 published intraday strategy variants were tested on 5-minute and hourly data; "
+        "none beat the ~13 bps round-trip cost out of sample (see docs/research-log.md).")
     st.caption("Research and paper-trading tool — not investment advice. Backtests and paper results do "
                "not guarantee future returns; shortability (ASM/T2T), slippage and leverage change outcomes.")
 
