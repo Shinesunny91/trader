@@ -100,7 +100,10 @@ class Context:
 
 
 def universe() -> list[str]:
-    return sorted(pd.read_csv(UNIVERSE_CSV)["Symbol"].astype(str).str.strip())
+    df = pd.read_csv(UNIVERSE_CSV)
+    if "Series" in df.columns:
+        df = df[df["Series"].astype(str).str.strip() == "EQ"]
+    return sorted(df["Symbol"].astype(str).str.strip())
 
 
 def completed_bars(now: datetime) -> int:
