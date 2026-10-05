@@ -304,7 +304,7 @@ def gap_fade(p: DayPanel, ctx: Context, *, min_gap_atr: float = 1.0, top: int = 
 
 
 def vol_breakout(p: DayPanel, ctx: Context, *, rv_min: float = 1.5, stop_atr: float = 0.4,
-                 n_max: int = 10) -> list[Signal]:
+                 max_per_bar: int = 2) -> list[Signal]:
     out: list[Signal] = []
     done: set[int] = set()
     if p.nbar <= FIRST_HOUR:
@@ -314,16 +314,19 @@ def vol_breakout(p: DayPanel, ctx: Context, *, rv_min: float = 1.5, stop_atr: fl
         runhi = np.fmax.accumulate(np.nan_to_num(p.h, nan=-np.inf), axis=1)
         runlo = np.fmin.accumulate(np.nan_to_num(p.lo, nan=np.inf), axis=1)
     for b in range(FIRST_HOUR, min(p.nbar, SQ_BAR - 3)):
+        bar_cands: list[tuple[float, int, int]] = []
         for side, brk in ((1, p.h[:, b] > runhi[:, b - 1]), (-1, p.lo[:, b] < runlo[:, b - 1])):
             for s in np.where(brk & (cum[:, b - 1] >= rv_min) & np.isfinite(ctx.atr))[0]:
-                if s in done or len(out) >= n_max:
-                    continue
-                level = runhi[s, b - 1] if side > 0 else runlo[s, b - 1]
-                entry = max(level, p.o[s, b]) if side > 0 else min(level, p.o[s, b])
-                out.append(Signal("vol_breakout", p.symbols[s], side, b, round(float(entry), 2),
-                                  round(float(entry - side * stop_atr * ctx.atr[s]), 2),
-                                  reason=f"new session {'high' if side > 0 else 'low'} on {cum[s, b - 1]:.1f}x volume"))
-                done.add(s)
+                if s not in done:
+                    bar_cands.append((float(cum[s, b - 1]), int(s), int(side)))
+        bar_cands.sort(key=lambda x: -x[0])
+        for rv_val, s, side in bar_cands[:max_per_bar]:
+            level = runhi[s, b - 1] if side > 0 else runlo[s, b - 1]
+            entry = max(level, p.o[s, b]) if side > 0 else min(level, p.o[s, b])
+            out.append(Signal("vol_breakout", p.symbols[s], side, b, round(float(entry), 2),
+                              round(float(entry - side * stop_atr * ctx.atr[s]), 2),
+                              reason=f"new session {'high' if side > 0 else 'low'} on {rv_val:.1f}x volume"))
+            done.add(s)
     return out
 
 
@@ -515,6 +518,7 @@ def build_live(p: DayPanel, ctx: Context, ann: pd.DataFrame, picks_payload: dict
     if not snap.empty:
         snap = snap[snap["symbol"].isin(uni)].reset_index(drop=True)
     signals = [s for s in run_strategies(p, ctx) if s["symbol"] in uni]
+    signals.sort(key=lambda s: s.get("bar", 0), reverse=True)
     payload = {"session": p.session.isoformat(), "generated_at": now.isoformat(timespec="seconds"),
                "nbar": p.nbar, "last_bar": None, "breadth": {}, "in_play": [], "gainers": [], "losers": [],
                "highs": [], "lows": [], "circuit_watch": [], "announcements": announcement_rows(ann, p),
