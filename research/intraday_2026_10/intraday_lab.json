@@ -1,0 +1,420 @@
+{
+ "days": [
+  "2026-07-01",
+  "2026-10-05"
+ ],
+ "split": "2026-08-25",
+ "cost_bps": 13.3,
+ "results": {
+  "orbR15_top10": {
+   "IS": {
+    "days": 29,
+    "trades": 203,
+    "net_bps_trade": -8.45,
+    "gross_bps_trade": 4.85,
+    "daily_mean": -4.92,
+    "t": -0.34,
+    "hit": 0.483,
+    "pos_days": 0.483,
+    "stops": 0.163,
+    "long_net": -33.48,
+    "short_net": 42.36
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 169,
+    "net_bps_trade": -47.8,
+    "gross_bps_trade": -34.5,
+    "daily_mean": -55.53,
+    "t": -2.87,
+    "hit": 0.414,
+    "pos_days": 0.2,
+    "stops": 0.172,
+    "long_net": -65.28,
+    "short_net": -18.37
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 372,
+    "net_bps_trade": -26.33,
+    "gross_bps_trade": -13.03,
+    "daily_mean": -28.35,
+    "t": -2.32,
+    "hit": 0.452,
+    "pos_days": 0.352,
+    "stops": 0.167,
+    "long_net": -47.41,
+    "short_net": 12.93
+   }
+  },
+  "orbR15_top20": {
+   "IS": {
+    "days": 29,
+    "trades": 423,
+    "net_bps_trade": -11.61,
+    "gross_bps_trade": 1.69,
+    "daily_mean": -12.67,
+    "t": -1.44,
+    "hit": 0.461,
+    "pos_days": 0.31,
+    "stops": 0.173,
+    "long_net": -22.36,
+    "short_net": 7.96
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 364,
+    "net_bps_trade": -20.74,
+    "gross_bps_trade": -7.44,
+    "daily_mean": -17.52,
+    "t": -1.61,
+    "hit": 0.42,
+    "pos_days": 0.36,
+    "stops": 0.179,
+    "long_net": -26.94,
+    "short_net": -11.81
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 787,
+    "net_bps_trade": -15.83,
+    "gross_bps_trade": -2.53,
+    "daily_mean": -14.91,
+    "t": -2.18,
+    "hit": 0.442,
+    "pos_days": 0.333,
+    "stops": 0.175,
+    "long_net": -24.38,
+    "short_net": -1.89
+   }
+  },
+  "orbR30_top10": {
+   "IS": {
+    "days": 29,
+    "trades": 192,
+    "net_bps_trade": -13.48,
+    "gross_bps_trade": -0.18,
+    "daily_mean": -12.27,
+    "t": -0.78,
+    "hit": 0.464,
+    "pos_days": 0.552,
+    "stops": 0.094,
+    "long_net": -28.7,
+    "short_net": 12.46
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 153,
+    "net_bps_trade": -32.38,
+    "gross_bps_trade": -19.08,
+    "daily_mean": -26.29,
+    "t": -1.38,
+    "hit": 0.386,
+    "pos_days": 0.24,
+    "stops": 0.111,
+    "long_net": -40.21,
+    "short_net": -15.74
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 345,
+    "net_bps_trade": -21.86,
+    "gross_bps_trade": -8.56,
+    "daily_mean": -18.76,
+    "t": -1.55,
+    "hit": 0.429,
+    "pos_days": 0.407,
+    "stops": 0.101,
+    "long_net": -34.02,
+    "short_net": 0.95
+   }
+  },
+  "orbR30_top20": {
+   "IS": {
+    "days": 29,
+    "trades": 378,
+    "net_bps_trade": -8.05,
+    "gross_bps_trade": 5.25,
+    "daily_mean": -9.56,
+    "t": -0.93,
+    "hit": 0.479,
+    "pos_days": 0.483,
+    "stops": 0.106,
+    "long_net": -17.99,
+    "short_net": 9.85
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 305,
+    "net_bps_trade": -23.01,
+    "gross_bps_trade": -9.71,
+    "daily_mean": -15.44,
+    "t": -1.01,
+    "hit": 0.403,
+    "pos_days": 0.32,
+    "stops": 0.131,
+    "long_net": -30.48,
+    "short_net": -10.68
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 683,
+    "net_bps_trade": -14.73,
+    "gross_bps_trade": -1.43,
+    "daily_mean": -12.28,
+    "t": -1.39,
+    "hit": 0.445,
+    "pos_days": 0.407,
+    "stops": 0.117,
+    "long_net": -23.47,
+    "short_net": 0.41
+   }
+  },
+  "orbR60_top10": {
+   "IS": {
+    "days": 29,
+    "trades": 161,
+    "net_bps_trade": -17.68,
+    "gross_bps_trade": -4.38,
+    "daily_mean": -16.04,
+    "t": -1.03,
+    "hit": 0.435,
+    "pos_days": 0.379,
+    "stops": 0.075,
+    "long_net": -30.92,
+    "short_net": 5.21
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 134,
+    "net_bps_trade": -35.93,
+    "gross_bps_trade": -22.63,
+    "daily_mean": -31.44,
+    "t": -1.43,
+    "hit": 0.343,
+    "pos_days": 0.36,
+    "stops": 0.052,
+    "long_net": -39.15,
+    "short_net": -30.51
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 295,
+    "net_bps_trade": -25.97,
+    "gross_bps_trade": -12.67,
+    "daily_mean": -23.17,
+    "t": -1.77,
+    "hit": 0.393,
+    "pos_days": 0.37,
+    "stops": 0.064,
+    "long_net": -34.64,
+    "short_net": -11.17
+   }
+  },
+  "orbR60_top20": {
+   "IS": {
+    "days": 29,
+    "trades": 327,
+    "net_bps_trade": -8.77,
+    "gross_bps_trade": 4.53,
+    "daily_mean": -10.69,
+    "t": -1.24,
+    "hit": 0.456,
+    "pos_days": 0.448,
+    "stops": 0.073,
+    "long_net": -15.62,
+    "short_net": 5.29
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 275,
+    "net_bps_trade": -29.87,
+    "gross_bps_trade": -16.57,
+    "daily_mean": -23.26,
+    "t": -1.63,
+    "hit": 0.393,
+    "pos_days": 0.36,
+    "stops": 0.062,
+    "long_net": -35.85,
+    "short_net": -20.2
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 602,
+    "net_bps_trade": -18.41,
+    "gross_bps_trade": -5.11,
+    "daily_mean": -16.51,
+    "t": -2.06,
+    "hit": 0.427,
+    "pos_days": 0.407,
+    "stops": 0.068,
+    "long_net": -24.43,
+    "short_net": -7.33
+   }
+  },
+  "dhb_rv1.5_stop0.2": {
+   "IS": {
+    "days": 29,
+    "trades": 290,
+    "net_bps_trade": -16.85,
+    "gross_bps_trade": -3.55,
+    "daily_mean": -16.85,
+    "t": -1.94,
+    "hit": 0.234,
+    "pos_days": 0.31,
+    "stops": 0.721,
+    "long_net": -17.28,
+    "short_net": -15.42
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 250,
+    "net_bps_trade": -5.11,
+    "gross_bps_trade": 8.19,
+    "daily_mean": -5.11,
+    "t": -0.56,
+    "hit": 0.28,
+    "pos_days": 0.44,
+    "stops": 0.696,
+    "long_net": -9.76,
+    "short_net": 2.61
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 540,
+    "net_bps_trade": -11.41,
+    "gross_bps_trade": 1.89,
+    "daily_mean": -11.41,
+    "t": -1.82,
+    "hit": 0.256,
+    "pos_days": 0.37,
+    "stops": 0.709,
+    "long_net": -14.18,
+    "short_net": -4.89
+   }
+  },
+  "dhb_rv1.5_stop0.4": {
+   "IS": {
+    "days": 29,
+    "trades": 290,
+    "net_bps_trade": -23.49,
+    "gross_bps_trade": -10.19,
+    "daily_mean": -23.49,
+    "t": -2.33,
+    "hit": 0.338,
+    "pos_days": 0.31,
+    "stops": 0.469,
+    "long_net": -28.79,
+    "short_net": -5.86
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 250,
+    "net_bps_trade": 4.91,
+    "gross_bps_trade": 18.21,
+    "daily_mean": 4.91,
+    "t": 0.46,
+    "hit": 0.444,
+    "pos_days": 0.48,
+    "stops": 0.404,
+    "long_net": -0.86,
+    "short_net": 14.48
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 540,
+    "net_bps_trade": -10.34,
+    "gross_bps_trade": 2.96,
+    "daily_mean": -10.34,
+    "t": -1.38,
+    "hit": 0.387,
+    "pos_days": 0.389,
+    "stops": 0.439,
+    "long_net": -17.29,
+    "short_net": 6.02
+   }
+  },
+  "dhb_rv3.0_stop0.2": {
+   "IS": {
+    "days": 29,
+    "trades": 290,
+    "net_bps_trade": -15.99,
+    "gross_bps_trade": -2.69,
+    "daily_mean": -15.99,
+    "t": -1.84,
+    "hit": 0.21,
+    "pos_days": 0.31,
+    "stops": 0.766,
+    "long_net": -19.18,
+    "short_net": -8.9
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 247,
+    "net_bps_trade": -17.9,
+    "gross_bps_trade": -4.6,
+    "daily_mean": -16.56,
+    "t": -2.05,
+    "hit": 0.211,
+    "pos_days": 0.2,
+    "stops": 0.737,
+    "long_net": -21.7,
+    "short_net": -11.5
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 537,
+    "net_bps_trade": -16.87,
+    "gross_bps_trade": -3.57,
+    "daily_mean": -16.25,
+    "t": -2.74,
+    "hit": 0.21,
+    "pos_days": 0.259,
+    "stops": 0.752,
+    "long_net": -20.28,
+    "short_net": -10.21
+   }
+  },
+  "dhb_rv3.0_stop0.4": {
+   "IS": {
+    "days": 29,
+    "trades": 290,
+    "net_bps_trade": -20.27,
+    "gross_bps_trade": -6.97,
+    "daily_mean": -20.27,
+    "t": -2.01,
+    "hit": 0.341,
+    "pos_days": 0.276,
+    "stops": 0.531,
+    "long_net": -27.55,
+    "short_net": -4.07
+   },
+   "OOS": {
+    "days": 25,
+    "trades": 247,
+    "net_bps_trade": -13.37,
+    "gross_bps_trade": -0.07,
+    "daily_mean": -11.88,
+    "t": -1.13,
+    "hit": 0.368,
+    "pos_days": 0.44,
+    "stops": 0.486,
+    "long_net": -11.78,
+    "short_net": -16.05
+   },
+   "ALL": {
+    "days": 54,
+    "trades": 537,
+    "net_bps_trade": -17.09,
+    "gross_bps_trade": -3.79,
+    "daily_mean": -16.38,
+    "t": -2.26,
+    "hit": 0.354,
+    "pos_days": 0.352,
+    "stops": 0.51,
+    "long_net": -20.67,
+    "short_net": -10.13
+   }
+  }
+ }
+}

@@ -14,6 +14,33 @@ git checkout fa1b3e2 -- scripts/<name>.py # restore one
 
 Newest first.
 
+## 2026-10-05 — search for a continuous intraday strategy (all rejected)
+
+**Question.** Is there a published intraday strategy that a scanner could
+recommend continuously through the session, profitably after the ~13.3 bps MIS
+round trip? Parameters were chosen on the first part of each sample and judged
+on the rest. Every trade pays costs.
+
+| Family (source) | Data | Variants | Best out-of-sample net bps/trade |
+|---|---|---|---|
+| ORB on "stocks in play", ATR stop (Zarattini, Barbon & Aziz 2024) | 5-min, 67 sessions | 18 | −13 (all −13…−32) |
+| ORB, stop at the far side of the range (15/30/60 min) | 5-min | 6 | −21 |
+| ORB-60 (follow / fade), relative-volume filter | 1-hour, 720 sessions | 12 | +0.2 (t −0.03); in-sample +10…+18 did not hold |
+| First-hour momentum / reversal at 10:15, 12:15, 14:15 | 1-hour + 5-min | 28 | +4.1 (t 0.26) |
+| Today's gap fade to the previous close | 5-min | 4 | +12.3 (t 1.1, n 87) |
+| VWAP reversion | 5-min | 2 | +2.1 (t 0.2) |
+| Session-high/low breakout on heavy volume | 5-min | 4 | +4.9 (t 0.5) |
+| Drift/fade after in-session NSE announcements (Chan 2003) | 1-hour + `nse_corp` | 16 | +8.2 (t 0.4); in-sample sign flipped |
+| NIFTY/BANKNIFTY intraday momentum (Gao et al. 2018) at a 4.5 bps futures cost | 1-hour, 718 days | 10 | +1.2 (t 0.4) |
+
+About 100 variants were tested and none survived. Gross edges are 0–15 bps,
+the same order as costs, which matches the 2026-08-19 audit of the old voting
+scanner (+0.8 bps gross). Intraday price patterns in NSE cash equities don't pay
+for STT plus slippage. The overnight gap-reversal book works because its typical
+move (≈65 bps) is several times the cost. Scripts and results:
+`research/intraday_2026_10/`.
+Hourly bars (2 years) are now in `candles.sqlite3` (`interval='1h'`) for future work.
+
 ## 2026-10-04 — cleanup, catalyst data, entry limit, and an honest A/B harness
 
 **Cleanup.** The voting scanner (17-strategy 5-minute ensemble, proven
