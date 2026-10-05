@@ -1,10 +1,13 @@
 """Pages of the gap-reversal app: Today, Performance, Model.
 
-Reads only what the scheduled jobs write (data/gap_reversal/*, data/models/*);
-no network calls, every read cached for 60 s and failure-tolerant.
+Reads what the scheduled jobs write (data/gap_reversal/*, data/models/*), every
+read cached for 60 s and failure-tolerant.  The only network read is the live
+panel on the Today page: 1-minute Yahoo bars for today's names, refreshed every
+60 s during market hours (set NSE_UI_LIVE=0 to disable).
 """
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -133,6 +136,131 @@ def _phase(now: datetime) -> str:
     return "🌙 Market closed — paper result recorded at 15:40; next list at 08:45."
 
 
+# ── Live panel (Today) ──────────────────────────────────────────────────────
+def _live_enabled() -> bool:
+    return os.environ.get("NSE_UI_LIVE", "1") != "0"
+
+
+@st.cache_data(ttl=50, show_spinner=False)
+def live_bars(symbols: tuple[str, ...], day: str) -> dict[str, pd.DataFrame]:
+    """1-minute bars for `day` per Yahoo symbol (IST index); {} on any failure."""
+    try:
+        import yfinance as yf
+        raw = yf.download(list(symbols), period="1d", interval="1m", group_by="ticker",
+                          progress=False, threads=True, auto_adjust=False)
+    except Exception:                                    # noqa: BLE001 — live view is optional
+        return {}
+    out: dict[str, pd.DataFrame] = {}
+    if raw is None or raw.empty:
+        return out
+    for sym in symbols:
+        try:
+            frame = raw[sym] if isinstance(raw.columns, pd.MultiIndex) else raw
+            frame = frame.rename(columns=str.lower)[["open", "high", "low", "close"]].dropna()
+            idx = frame.index.tz_convert(IST) if frame.index.tz else frame.index.tz_localize(IST)
+            frame = frame.set_axis(idx)
+            frame = frame[(frame.index.date.astype(str) == day)
+                          & (frame.index.hour * 60 + frame.index.minute >= 555)]
+            if not frame.empty:
+                out[sym] = frame
+        except Exception:                                # noqa: BLE001
+            continue
+    return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _bands(day: str) -> pd.DataFrame:
+    try:
+        from nse_intraday_ai import nse_bands
+        return nse_bands.load(date.fromisoformat(day), fetch=False, log=lambda *_: None)
+    except Exception:                                    # noqa: BLE001
+        return pd.DataFrame(columns=["series", "band"])
+
+
+@st.fragment(run_every=60)
+def live_panel(payload: dict, session: str) -> None:
+    """Live short P&L of the names you traded; reruns itself every 60 s."""
+    picks = payload["picks"]
+    traded = st.session_state.get("traded") or [str(p["symbol"]).removesuffix(".NS")
+                                                 for p in picks if not p.get("reserve")]
+    size = st.session_state.get("size_pct", 100) / 100
+    chosen = [p for p in picks if str(p["symbol"]).removesuffix(".NS") in traded]
+    bars = live_bars(tuple(sorted(str(p["symbol"]) for p in chosen)), session)
+    now = datetime.now(IST)
+    if not bars:
+        st.info("Live prices not available yet (Yahoo 1-minute bars start a few minutes after 09:15).")
+        return
+    bands = _bands(session)
+    square_off = payload.get("config", {}).get("square_off", "15:15")
+    rows, paths = [], {}
+    for p in chosen:
+        sym = str(p["symbol"])
+        b = bars.get(sym)
+        if b is None:
+            continue
+        entry = float(p.get("entry") or b["open"].iloc[0])
+        stop = float(p.get("stop_price") or entry + float(p["stop_distance"]))
+        note = ""
+        pick = G.Pick(**{k: v for k, v in p.items() if k in G.Pick.__dataclass_fields__})
+        pick.stop_price = stop
+        cap = G.circuit_capped_stop(pick, bands)
+        if cap is not None:
+            note = f"⚠ stop would be above the ₹{cap[1]:,.2f} upper circuit — set BUY SL-M at ₹{cap[0]:,.2f}"
+            stop = cap[0]
+        path, status, price = G.live_short_path(b, entry, stop, square_off)
+        qty = int(int(p["quantity"]) * size)
+        pnl_pct = float(path.iloc[-1])
+        name = sym.removesuffix(".NS")
+        paths[name] = path
+        rows.append({
+            "": {"STOPPED": "🔴", "COVERED": "⚪"}.get(status, "🟢" if pnl_pct >= 0 else "🟠"),
+            "Symbol": name, "Status": status, "Qty": qty, "Entry ₹": round(entry, 2),
+            "Last ₹": round(price, 2), "P&L %": round(pnl_pct, 2),
+            "P&L ₹": round(qty * entry * pnl_pct / 100, 0), "BUY SL-M ₹": round(stop, 2),
+            "To stop %": round((stop - price) / price * 100, 2) if status == "OPEN" else None,
+            "Note": note})
+    if not rows:
+        st.info("No live bars for the selected names yet.")
+        return
+    df = pd.DataFrame(rows)
+    total = float(df["P&L ₹"].sum())
+    deployed = float((df["Qty"] * df["Entry ₹"]).sum())
+    last_bar = max(b.index[-1] for b in bars.values())
+    c = st.columns(4)
+    c[0].metric("Basket P&L (before costs)", f"₹{total:+,.0f}",
+                f"{total / deployed * 100:+.2f}% of ₹{deployed:,.0f}" if deployed else None)
+    c[1].metric("Winning / losing", f"{int((df['P&L %'] > 0).sum())} / {int((df['P&L %'] < 0).sum())}")
+    c[2].metric("Stops hit", int((df["Status"] == "STOPPED").sum()))
+    c[3].metric("Last price at", f"{last_bar:%H:%M}", f"refreshed {now:%H:%M:%S}", delta_color="off")
+    if df["Note"].astype(bool).any():
+        for _, r in df[df["Note"].astype(bool)].iterrows():
+            st.error(f"**{r['Symbol']}**: {r['Note']}")
+    table(df.drop(columns=[] if df["Note"].astype(bool).any() else ["Note"]),
+          f"live_{session}", column_config={
+              "P&L %": st.column_config.NumberColumn(format="%+.2f %%"),
+              "P&L ₹": st.column_config.NumberColumn(format="₹%+.0f"),
+              "To stop %": st.column_config.NumberColumn(
+                  format="%.2f %%", help="How far the price must rise to hit your stop")})
+    wide = pd.DataFrame(paths).ffill()
+    weights = df.set_index("Symbol")["Qty"] * df.set_index("Symbol")["Entry ₹"]
+    basket = (wide * weights.reindex(wide.columns)).sum(axis=1) / weights.sum()
+    fig = go.Figure()
+    for i, col in enumerate(wide.columns):
+        fig.add_trace(go.Scatter(x=wide.index, y=wide[col], name=col, mode="lines",
+                                 line=dict(width=1, color=PALETTE[(i + 1) % len(PALETTE)]),
+                                 opacity=0.55, hovertemplate="%{y:+.2f}%"))
+    fig.add_trace(go.Scatter(x=basket.index, y=basket, name="Basket", mode="lines",
+                             line=dict(width=3, color=UP if basket.iloc[-1] >= 0 else DOWN),
+                             hovertemplate="%{y:+.2f}%"))
+    fig.add_hline(y=0, line=dict(color="#8A92A6", width=1, dash="dot"))
+    fig.update_layout(title="Short P&L since the open (% of entry, + = profit)",
+                      xaxis_title="Time (IST)", yaxis_title="P&L (%)", yaxis_ticksuffix="%")
+    export = wide.assign(Basket=basket).reset_index(names="time")
+    chart(fig, export, f"live_path_{session}", height=360)
+    st.caption("Prices: Yahoo Finance 1-minute bars (can lag NSE by 1–2 minutes). Stops use the "
+               "official open unless your fill differs — your broker's order book is the truth.")
+
+
 def page_today() -> None:
     now = datetime.now(IST)
     st.caption(_phase(now))
@@ -169,6 +297,17 @@ def page_today() -> None:
                    "after this list — the next list will be ranked by it.")
     if payload.get("final_at"):
         st.success(f"**Final list** — re-ranked at {str(payload['final_at'])[11:16]} on today's opening prices.")
+    live = session == now.date().isoformat() and now.hour * 60 + now.minute >= 555 and _live_enabled()
+    if live:
+        st.subheader("📡 Live — your positions")
+        names = [str(p.get("symbol", "")).removesuffix(".NS") for p in payload["picks"]]
+        main = [n for n, p in zip(names, payload["picks"]) if not p.get("reserve")]
+        c = st.columns([3, 1])
+        c[0].multiselect("Names I traded", names, default=main, key="traded",
+                         help="Swap in a reserve if you used one instead of a listed name.")
+        c[1].select_slider("My size (% of listed qty)", [25, 50, 75, 100], value=100, key="size_pct")
+        live_panel(payload, session)
+        st.subheader("🗒 Morning list")
     rows = [{"Rank": p.get("rank"), "Symbol": str(p.get("symbol", "")).removesuffix(".NS"),
              "Role": "Reserve" if p.get("reserve") else "SHORT", "Qty": p.get("quantity"),
              "Yesterday gap %": p.get("gap_prev_pct"), "Prev close ₹": p.get("prev_close"),

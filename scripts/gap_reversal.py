@@ -224,24 +224,35 @@ def cmd_levels(args) -> None:
     if not args.no_fetch and G.missing_intraday(symbols, session):
         G.refresh(symbols, interval="5m", period="1d")
     opened = []
+    from nse_intraday_ai import nse_bands
+    try:
+        bands = nse_bands.load(session, fetch=False)
+    except Exception:                                         # noqa: BLE001 — optional input
+        bands = nse_bands.parse("Symbol,Series,Security Name,Band,Remarks\n")
+    capped: dict[str, float] = {}
     for p in picks:
         bars = G.load_session_bars(p.symbol, session)
         if not bars.empty and 0 in bars.index:
             p.entry = round(float(bars.at[0, "open"]), 2)
             p.stop_price = round(p.entry + p.stop_distance, 2)
+            cap = G.circuit_capped_stop(p, bands)
+            if cap is not None:
+                capped[p.symbol], p.stop_price = cap[1], cap[0]
             opened.append(p)
     if not opened:
         push(f"Gap-reversal {session:%d %b}", "No opening prices — market holiday or no data yet. "
              "No trades today.", enabled=args.push, priority="default")
         return
-    G.save_picks(session, picks, CONFIG, based_on=(G.read_picks() or {}).get("based_on"),
-                 levels_at=datetime.now(IST).isoformat(timespec="seconds"))
+    previous = G.read_picks() or {}
+    extra = {k: v for k, v in previous.items() if k not in ("session", "config", "picks")}
+    G.save_picks(session, picks, CONFIG, **{**extra, "levels_at": datetime.now(IST).isoformat(timespec="seconds")})
     main = [p for p in opened if not p.reserve][:CONFIG.picks]
     body = "\n".join(
         f"{p.symbol.removesuffix('.NS'):<11} opened ₹{p.entry:,.2f} below limit ₹{p.limit_price:,.2f} "
         f"→ NOT FILLED, cancel the order"
         if p.limit_price and p.entry < p.limit_price else
         f"{p.symbol.removesuffix('.NS'):<11} open ₹{p.entry:,.2f} → BUY SL-M ₹{p.stop_price:,.2f}"
+        + (f"  ⚠ capped below the ₹{capped[p.symbol]:,.2f} upper circuit" if p.symbol in capped else "")
         for p in main)
     body += f"\nCover everything at {CONFIG.square_off}. (Stops use the 09:15 open; use your own fill if different.)"
     push(f"🛑 Stop-loss levels {session:%d %b}", body, enabled=args.push)

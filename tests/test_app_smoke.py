@@ -28,6 +28,7 @@ def password(tmp_path, monkeypatch) -> str:
     from nse_intraday_ai import auth
     path = tmp_path / "auth.json"
     monkeypatch.setenv("NSE_AUTH_FILE", str(path))
+    monkeypatch.setenv("NSE_UI_LIVE", "0")                 # no network in tests
     auth.set_password("test-pass-123", path)
     return "test-pass-123"
 

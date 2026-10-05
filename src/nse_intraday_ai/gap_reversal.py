@@ -434,6 +434,59 @@ def drop_untradeable(picks: list[Pick], table: pd.DataFrame,
     return keep, dropped
 
 
+def upper_circuit(pick: Pick, table: pd.DataFrame) -> float | None:
+    """Today's upper circuit price (prev close x (1 + band)); None for no band / unknown."""
+    sym = pick.symbol.removesuffix(".NS")
+    if not pick.prev_close or table is None or sym not in table.index or pd.isna(table.at[sym, "band"]):
+        return None
+    return round(pick.prev_close * (1 + float(table.at[sym, "band"]) / 100), 2)
+
+
+def circuit_capped_stop(pick: Pick, table: pd.DataFrame) -> tuple[float, float] | None:
+    """(capped stop, upper circuit) if the stop sits at/above the circuit, else None.
+
+    An order with a trigger above the circuit is rejected or can never fire;
+    the cap puts it one tick under the circuit so the position stays protected.
+    """
+    upper = upper_circuit(pick, table)
+    if upper is None or pick.stop_price is None:
+        return None
+    tick = tick_size(upper)
+    if pick.stop_price < upper - tick:
+        return None
+    return round(math.floor(round((upper - tick) / tick, 6)) * tick, 2), upper
+
+
+def live_short_path(bars: pd.DataFrame, entry: float, stop: float,
+                    square_off: str = "15:15") -> tuple[pd.Series, str, float]:
+    """Running short P&L (% of entry, before costs) over intraday bars.
+
+    `bars` has a time-of-day ordered DatetimeIndex and open/high/close columns,
+    starting at the 09:15 open.  Same rules as `simulate_pick`: the stop fills
+    at the stop (or at a later bar's open if it gaps through), and the trade is
+    covered at the open of the `square_off` bar.  Returns (path, status, price)
+    where status is OPEN | STOPPED | COVERED and price is the last/exit price.
+    """
+    if bars.empty or not entry or not math.isfinite(entry):
+        return pd.Series(dtype=float), "OPEN", float("nan")
+    hh, mm = (int(x) for x in square_off.split(":"))
+    cut = bars.index.hour * 60 + bars.index.minute >= hh * 60 + mm
+    pnl = (entry - bars["close"].astype(float)) / entry * 100
+    status, price = "OPEN", float(bars["close"].iloc[-1])
+    hit = bars["high"].astype(float).ge(stop) & ~cut
+    if hit.any():
+        first = int(hit.to_numpy().argmax())
+        fill = stop if first == 0 else max(stop, float(bars["open"].iloc[first]))
+        pnl.iloc[first:] = (entry - fill) / entry * 100
+        return pnl, "STOPPED", fill
+    if cut.any():
+        first = int(cut.argmax())
+        price = float(bars["open"].iloc[first])
+        pnl.iloc[first:] = (entry - price) / entry * 100
+        status = "COVERED"
+    return pnl, status, price
+
+
 def simulate_pick(pick: Pick, bars: pd.DataFrame, session: date,
                   config: GapReversalConfig = GapReversalConfig()) -> Trade | None:
     """Short at the 09:15 open, buy-stop at entry + stop_atr*ATR, cover at 15:15.
@@ -657,7 +710,7 @@ def read_picks(path: Path | None = None) -> dict | None:
 
 def save_picks(session: date, picks: list[Pick], config: GapReversalConfig = GapReversalConfig(),
                path: Path | None = None, **extra) -> None:
-    import json
+    from nse_intraday_ai.atomic_io import atomic_write_json
 
     path = PICKS_PATH if path is None else path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -668,7 +721,7 @@ def save_picks(session: date, picks: list[Pick], config: GapReversalConfig = Gap
         "picks": [p.to_dict() for p in picks],
         **extra,
     }
-    path.write_text(json.dumps(payload, indent=2))
+    atomic_write_json(path, payload)
 
 
 def load_picks(session: date, path: Path | None = None) -> list[Pick] | None:
