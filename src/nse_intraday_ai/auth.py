@@ -42,11 +42,29 @@ def set_password(password: str, path: Path | None = None) -> None:
 
 
 def is_configured(path: Path | None = None) -> bool:
+    if os.environ.get("DASHBOARD_PASSWORD"):
+        return True
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "DASHBOARD_PASSWORD" in st.secrets:
+            return True
+    except Exception:
+        pass
     rec = atomic_read_json(path or auth_file(), default={}) or {}
     return bool(rec.get("hash") and rec.get("salt"))
 
 
 def verify(password: str, path: Path | None = None) -> bool:
+    env_pw = os.environ.get("DASHBOARD_PASSWORD")
+    if env_pw and hmac.compare_digest(password, env_pw):
+        return True
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "DASHBOARD_PASSWORD" in st.secrets:
+            if hmac.compare_digest(password, str(st.secrets["DASHBOARD_PASSWORD"])):
+                return True
+    except Exception:
+        pass
     rec = atomic_read_json(path or auth_file(), default={}) or {}
     if not rec.get("hash") or not rec.get("salt"):
         return False
