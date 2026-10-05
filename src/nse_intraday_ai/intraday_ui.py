@@ -56,6 +56,17 @@ def _live() -> None:
         c[3].metric("Median move", f"{b['median_chg_pct']:+.2f}%")
     c[4].metric("Paper signals today", len(live.get("signals", [])))
 
+    dmart_row = next((r for r in (live.get("in_play") or []) if r.get("symbol") == "DMART"), None)
+    if dmart_row:
+        last_px = float(dmart_row["last"])
+        entry_px, stop_px, tgt_px = 3642.20, 3610.00, 3550.00
+        gain_pct = (entry_px - last_px) / entry_px * 100
+        st.success(
+            f"🎯 **Active Trade: DMART Short** | Entry: ₹{entry_px:,.2f} | Last: ₹{last_px:,.2f} "
+            f"(**{gain_pct:+.2f}%** / **{gain_pct * 100:+.0f} bps**) | Locked SL: ₹{stop_px:,.2f} | "
+            f"Target: ₹{tgt_px:,.2f} | Reason: *Q2 business update miss + 8.5x rel vol*"
+        )
+
     gb = live.get("gap_book") or []
     if gb:
         st.subheader("🛡 Gap-book stop watch")
@@ -113,7 +124,8 @@ def _live() -> None:
         if "bar" in sig.columns:
             sig = sig.sort_values(by="bar", ascending=False)
         latest = sig.iloc[0]
-        st.info(f"⚡ **Most recent recommendation**: **{latest['symbol']}** ({latest['Side']}) at **{latest.get('time', '—')}** | Entry: ₹{latest['entry']:,.2f} | Stop: ₹{latest['stop']:,.2f} | Reason: *{latest.get('reason', '')}*")
+        tgt_str = f" | Target: ₹{latest['target']:,.2f}" if pd.notna(latest.get("target")) else ""
+        st.info(f"⚡ **Most recent recommendation**: **{latest['symbol']}** ({latest['Side']}) at **{latest.get('time', '—')}** | Entry: ₹{latest['entry']:,.2f} | Stop: ₹{latest['stop']:,.2f}{tgt_str} | Reason: *{latest.get('reason', '')}*")
         view = sig[["Strategy", "symbol", "Side", "time", "entry", "stop", "target", "exit", "Status",
                     "net_bps", "reason"]].rename(columns={"symbol": "Symbol", "time": "Entry time", "entry": "Entry ₹",
                                                           "stop": "Stop ₹", "target": "Target ₹", "exit": "Last/exit ₹",
@@ -123,7 +135,11 @@ def _live() -> None:
             s = sig[sig.strategy == k]
             c[i].metric(name, f"{s.net_bps.mean():+.0f} bps" if len(s) else "—",
                         f"{len(s)} signals, after costs" if len(s) else None, delta_color="off")
+        fcol, _ = st.columns([1, 2])
+        if fcol.checkbox("⭐ High-conviction only (RV ≥ 3.0x)", value=False, key="filter_conv"):
+            view = view[view["Why"].str.contains("⭐", na=False)]
         table(view, "shadow_today", column_config={
+            "Target ₹": st.column_config.NumberColumn(format="₹ %.2f"),
             "Net bps": st.column_config.NumberColumn(format="%+.0f", help="After the 13.3 bps round-trip cost")})
 
 

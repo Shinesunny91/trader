@@ -307,7 +307,7 @@ def gap_fade(p: DayPanel, ctx: Context, *, min_gap_atr: float = 1.0, top: int = 
 
 
 def vol_breakout(p: DayPanel, ctx: Context, *, rv_min: float = 1.5, stop_atr: float = 0.4,
-                 max_per_bar: int = 2) -> list[Signal]:
+                 target_atr: float = 0.75, max_per_bar: int = 2) -> list[Signal]:
     out: list[Signal] = []
     done: set[int] = set()
     if p.nbar <= FIRST_HOUR:
@@ -326,9 +326,12 @@ def vol_breakout(p: DayPanel, ctx: Context, *, rv_min: float = 1.5, stop_atr: fl
         for rv_val, s, side in bar_cands[:max_per_bar]:
             level = runhi[s, b - 1] if side > 0 else runlo[s, b - 1]
             entry = max(level, p.o[s, b]) if side > 0 else min(level, p.o[s, b])
+            target = round(float(entry + side * target_atr * ctx.atr[s]), 2) if target_atr else None
+            conviction = "⭐ high-conviction " if rv_val >= 3.0 else ""
             out.append(Signal("vol_breakout", p.symbols[s], side, b, round(float(entry), 2),
                               round(float(entry - side * stop_atr * ctx.atr[s]), 2),
-                              reason=f"new session {'high' if side > 0 else 'low'} on {rv_val:.1f}x volume"))
+                              target=target,
+                              reason=f"{conviction}new session {'high' if side > 0 else 'low'} on {rv_val:.1f}x volume"))
             done.add(s)
     return out
 
