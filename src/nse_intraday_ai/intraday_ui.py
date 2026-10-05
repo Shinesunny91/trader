@@ -66,7 +66,8 @@ def _live() -> None:
             elif 0 <= r.to_stop_pct <= M.NEAR_STOP_PCT:
                 st.warning(f"**{r.symbol}** is {r.to_stop_pct:.1f}% from its stop ₹{r.stop:,.2f}. Keep the stop.")
         table(df.rename(columns={"symbol": "Symbol", "entry": "Entry ₹", "stop": "Stop ₹", "last": "Last ₹",
-                                 "stop_hit": "Stop hit", "to_stop_pct": "To stop %", "pnl_pct": "Short P&L %"}),
+                                 "stop_hit": "Stop hit", "stop_capped": "Capped under circuit",
+                                 "to_stop_pct": "To stop %", "pnl_pct": "Short P&L %"}),
               "gap_watch", column_config={"To stop %": st.column_config.NumberColumn(format="%.2f %%"),
                                           "Short P&L %": PCT})
 

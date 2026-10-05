@@ -442,9 +442,15 @@ def announcement_rows(ann: pd.DataFrame, p: DayPanel) -> list[dict]:
 
 
 # ── gap-book watch ──────────────────────────────────────────────────────────
-def gap_book_watch(p: DayPanel, picks_payload: dict | None) -> list[dict]:
+def gap_book_watch(p: DayPanel, picks_payload: dict | None, band: np.ndarray | None = None) -> list[dict]:
+    """Today's gap-book shorts vs their stops.
+
+    `band` (aligned with p.symbols, % of prev close) caps a stop that sits at or
+    above the upper circuit one tick under it — the same rule as the 09:18 levels.
+    """
     if not picks_payload or picks_payload.get("session") != p.session.isoformat() or not p.nbar:
         return []
+    from nse_intraday_ai import gap_reversal as G
     rows = []
     for pk in picks_payload.get("picks", []):
         sym = str(pk.get("symbol", "")).removesuffix(".NS")
@@ -452,11 +458,19 @@ def gap_book_watch(p: DayPanel, picks_payload: dict | None) -> list[dict]:
             continue
         s = p.idx(sym)
         stop, entry = float(pk["stop_price"]), float(pk.get("entry") or p.o[s, 0])
+        capped = False
+        if band is not None and pk.get("prev_close") and math.isfinite(float(band[s])):
+            pick = G.Pick(rank=0, symbol=sym, side="SHORT", gap_prev_pct=0.0, prev_close=float(pk["prev_close"]),
+                          atr=0.0, stop_distance=0.0, quantity=0, position_value=0.0, turnover_cr=0.0,
+                          stop_price=stop)
+            cap = G.circuit_capped_stop(pick, pd.DataFrame({"band": [float(band[s])]}, index=[sym]))
+            if cap is not None:
+                stop, capped = cap[0], True
         with _quiet():
             hit = bool(np.nanmax(p.h[s, : min(p.nbar, SQ_BAR)]) >= stop)
         last = float(p.c[s, p.nbar - 1])
         rows.append({"symbol": sym, "entry": entry, "stop": stop, "last": last, "stop_hit": hit,
-                     "to_stop_pct": round((stop / last - 1) * 100, 2),
+                     "stop_capped": capped, "to_stop_pct": round((stop / last - 1) * 100, 2),
                      "pnl_pct": round((entry - last) / entry * 100, 2)})
     return rows
 
@@ -497,7 +511,7 @@ def build_live(p: DayPanel, ctx: Context, ann: pd.DataFrame, picks_payload: dict
     payload = {"session": p.session.isoformat(), "generated_at": now.isoformat(timespec="seconds"),
                "nbar": p.nbar, "last_bar": None, "breadth": {}, "in_play": [], "gainers": [], "losers": [],
                "highs": [], "lows": [], "circuit_watch": [], "announcements": announcement_rows(ann, p),
-               "signals": _clean(signals), "gap_book": _clean(gap_book_watch(p, picks_payload)),
+               "signals": _clean(signals), "gap_book": _clean(gap_book_watch(p, picks_payload, ctx.band)),
                "research": {k: list(v) for k, v in RESEARCH.items()}}
     if p.nbar:
         m = 555 + 5 * (p.nbar - 1)

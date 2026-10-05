@@ -117,6 +117,16 @@ def test_gap_book_watch_and_alerts():
     assert M.gap_book_watch(p, {**payload, "session": "2026-10-04"}) == []
 
 
+def test_gap_book_watch_caps_stop_under_upper_circuit():
+    p = _panel(n_sym=1, nbar=5, price=97.0)               # LALITHAA-like: stop above the 5% band
+    payload = {"session": DAY.isoformat(), "picks": [
+        {"symbol": "S0.NS", "stop_price": 105.5, "entry": 97.0, "prev_close": 100.0, "reserve": False}]}
+    row = M.gap_book_watch(p, payload, np.array([5.0]))[0]
+    assert row["stop_capped"] and row["stop"] == 104.99 and not row["stop_hit"]
+    row = M.gap_book_watch(p, payload, np.array([20.0]))[0]
+    assert not row["stop_capped"] and row["stop"] == 105.5
+
+
 def test_build_live_is_json_clean():
     import json
     p, ctx = _panel(nbar=20), _ctx()

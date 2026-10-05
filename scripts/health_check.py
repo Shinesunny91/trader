@@ -170,6 +170,25 @@ def check_book(now: datetime) -> list[tuple[str, str, str]]:
     return out
 
 
+def check_intraday(now: datetime) -> tuple[str, str, str]:
+    """During the session the 5-minute monitor feed must be fresh (< 15 min old)."""
+    import json
+
+    from nse_intraday_ai.nse_calendar import is_trading_day
+
+    live = ROOT / "data" / "intraday" / "live.json"
+    due = is_trading_day(now.date()) and "09:35" <= now.strftime("%H:%M") <= "15:45"
+    if not live.exists():
+        return ("intraday monitor feed", WARN if due else OK, "data/intraday/live.json not written yet")
+    try:
+        gen = datetime.fromisoformat(json.loads(live.read_text())["generated_at"])
+    except (ValueError, KeyError, TypeError):
+        return ("intraday monitor feed", WARN, "live.json unreadable")
+    age = (now - gen).total_seconds() / 60
+    return ("intraday monitor feed", WARN if due and age > 15 else OK,
+            f"last scan {gen:%Y-%m-%d %H:%M} ({age:.0f} min ago)")
+
+
 def check_disk() -> tuple[str, str, str]:
     out = _run("df", "-h", str(ROOT))
     line = out.splitlines()[-1] if out else ""
@@ -193,6 +212,7 @@ def main() -> int:
     checks.append(check_disk())
     checks += check_data(now)
     checks += check_book(now)
+    checks.append(check_intraday(now))
 
     problems = [c for c in checks if c[1] != OK]
     width = max(len(name) for name, _, _ in checks)

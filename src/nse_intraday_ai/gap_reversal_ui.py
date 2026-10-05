@@ -177,9 +177,26 @@ def _bands(day: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["series", "band"])
 
 
+def countdown(now: datetime, square_off: str = "15:15") -> tuple[str, str]:
+    """(label, value) for the time left until the square-off."""
+    hh, mm = (int(x) for x in square_off.split(":"))
+    left = (hh * 60 + mm) * 60 - (now.hour * 3600 + now.minute * 60 + now.second)
+    if left <= 0:
+        return f"Cover by {square_off}", "COVER NOW" if left > -15 * 60 else "Closed"
+    return f"Time to {square_off} cover", f"{left // 3600}h {left % 3600 // 60:02d}m"
+
+
+def risk_colour(to_stop_pct: float | None) -> str:
+    """Red under 1 % from the stop, amber under 2.5 %, else green."""
+    if to_stop_pct is None or to_stop_pct != to_stop_pct:
+        return "#8A92A6"
+    return DOWN if to_stop_pct < 1 else "#FFB547" if to_stop_pct < 2.5 else UP
+
+
 @st.fragment(run_every=60)
 def live_panel(payload: dict, session: str) -> None:
     """Live short P&L of the names you traded; reruns itself every 60 s."""
+    from nse_intraday_ai.costs import round_trip_cost
     picks = payload["picks"]
     traded = st.session_state.get("traded") or [str(p["symbol"]).removesuffix(".NS")
                                                  for p in picks if not p.get("reserve")]
@@ -192,7 +209,7 @@ def live_panel(payload: dict, session: str) -> None:
         return
     bands = _bands(session)
     square_off = payload.get("config", {}).get("square_off", "15:15")
-    rows, paths = [], {}
+    rows, paths, levels = [], {}, {}
     for p in chosen:
         sym = str(p["symbol"])
         b = bars.get(sym)
@@ -212,51 +229,96 @@ def live_panel(payload: dict, session: str) -> None:
         pnl_pct = float(path.iloc[-1])
         name = sym.removesuffix(".NS")
         paths[name] = path
+        levels[name] = (sym, entry, stop, G.upper_circuit(pick, bands))
+        gross = qty * entry * pnl_pct / 100
+        cost = round_trip_cost(entry, price, qty).total if qty else 0.0
         rows.append({
             "": {"STOPPED": "🔴", "COVERED": "⚪"}.get(status, "🟢" if pnl_pct >= 0 else "🟠"),
             "Symbol": name, "Status": status, "Qty": qty, "Entry ₹": round(entry, 2),
             "Last ₹": round(price, 2), "P&L %": round(pnl_pct, 2),
-            "P&L ₹": round(qty * entry * pnl_pct / 100, 0), "BUY SL-M ₹": round(stop, 2),
+            "P&L ₹": round(gross, 0), "Costs ₹": round(cost, 0), "Net ₹": round(gross - cost, 0),
+            "BUY SL-M ₹": round(stop, 2),
             "To stop %": round((stop - price) / price * 100, 2) if status == "OPEN" else None,
             "Note": note})
     if not rows:
         st.info("No live bars for the selected names yet.")
         return
     df = pd.DataFrame(rows)
-    total = float(df["P&L ₹"].sum())
+    net, costs = float(df["Net ₹"].sum()), float(df["Costs ₹"].sum())
     deployed = float((df["Qty"] * df["Entry ₹"]).sum())
     last_bar = max(b.index[-1] for b in bars.values())
-    c = st.columns(4)
-    c[0].metric("Basket P&L (before costs)", f"₹{total:+,.0f}",
-                f"{total / deployed * 100:+.2f}% of ₹{deployed:,.0f}" if deployed else None)
-    c[1].metric("Winning / losing", f"{int((df['P&L %'] > 0).sum())} / {int((df['P&L %'] < 0).sum())}")
-    c[2].metric("Stops hit", int((df["Status"] == "STOPPED").sum()))
-    c[3].metric("Last price at", f"{last_bar:%H:%M}", f"refreshed {now:%H:%M:%S}", delta_color="off")
+    wide = pd.DataFrame(paths).ffill()
+    weights = df.set_index("Symbol")["Qty"] * df.set_index("Symbol")["Entry ₹"]
+    if weights.sum() <= 0:                                     # size 0 → equal weight for the chart
+        weights = weights * 0 + 1
+    basket = (wide * weights.reindex(wide.columns)).sum(axis=1) / weights.sum()
+    label, left = countdown(now, square_off)
+    c = st.columns(5)
+    c[0].metric("Basket P&L after costs", f"₹{net:+,.0f}",
+                f"{net / deployed * 100:+.2f}% of ₹{deployed:,.0f}" if deployed else None,
+                help=f"Gross ₹{net + costs:+,.0f} minus ₹{costs:,.0f} brokerage, STT, exchange, "
+                     "GST, stamp and slippage (Groww MIS).")
+    c[1].metric("Winning / losing", f"{int((df['P&L %'] > 0).sum())} / {int((df['P&L %'] < 0).sum())}",
+                f"stops hit {int((df['Status'] == 'STOPPED').sum())}", delta_color="off")
+    c[2].metric("Best / worst today", f"{basket.max():+.2f}% / {basket.min():+.2f}%",
+                f"at {basket.idxmax():%H:%M} / {basket.idxmin():%H:%M}", delta_color="off",
+                help="Highest and lowest basket P&L (before costs) since the open.")
+    c[3].metric(label, left)
+    c[4].metric("Last price at", f"{last_bar:%H:%M}", f"refreshed {now:%H:%M:%S}", delta_color="off")
     if df["Note"].astype(bool).any():
         for _, r in df[df["Note"].astype(bool)].iterrows():
             st.error(f"**{r['Symbol']}**: {r['Note']}")
     table(df.drop(columns=[] if df["Note"].astype(bool).any() else ["Note"]),
           f"live_{session}", column_config={
               "P&L %": st.column_config.NumberColumn(format="%+.2f %%"),
-              "P&L ₹": st.column_config.NumberColumn(format="₹%+.0f"),
+              "P&L ₹": st.column_config.NumberColumn(format="₹%+.0f", help="Before costs"),
+              "Costs ₹": st.column_config.NumberColumn(format="₹%.0f", help="Round-trip charges + slippage"),
+              "Net ₹": st.column_config.NumberColumn(format="₹%+.0f", help="After costs"),
               "To stop %": st.column_config.NumberColumn(
                   format="%.2f %%", help="How far the price must rise to hit your stop")})
-    wide = pd.DataFrame(paths).ffill()
-    weights = df.set_index("Symbol")["Qty"] * df.set_index("Symbol")["Entry ₹"]
-    basket = (wide * weights.reindex(wide.columns)).sum(axis=1) / weights.sum()
-    fig = go.Figure()
-    for i, col in enumerate(wide.columns):
-        fig.add_trace(go.Scatter(x=wide.index, y=wide[col], name=col, mode="lines",
-                                 line=dict(width=1, color=PALETTE[(i + 1) % len(PALETTE)]),
-                                 opacity=0.55, hovertemplate="%{y:+.2f}%"))
-    fig.add_trace(go.Scatter(x=basket.index, y=basket, name="Basket", mode="lines",
-                             line=dict(width=3, color=UP if basket.iloc[-1] >= 0 else DOWN),
-                             hovertemplate="%{y:+.2f}%"))
-    fig.add_hline(y=0, line=dict(color="#8A92A6", width=1, dash="dot"))
-    fig.update_layout(title="Short P&L since the open (% of entry, + = profit)",
-                      xaxis_title="Time (IST)", yaxis_title="P&L (%)", yaxis_ticksuffix="%")
-    export = wide.assign(Basket=basket).reset_index(names="time")
-    chart(fig, export, f"live_path_{session}", height=360)
+    left_col, right_col = st.columns([3, 2])
+    with left_col:
+        fig = go.Figure()
+        for i, col in enumerate(wide.columns):
+            fig.add_trace(go.Scatter(x=wide.index, y=wide[col], name=col, mode="lines",
+                                     line=dict(width=1, color=PALETTE[(i + 1) % len(PALETTE)]),
+                                     opacity=0.55, hovertemplate="%{y:+.2f}%"))
+        fig.add_trace(go.Scatter(x=basket.index, y=basket, name="Basket", mode="lines",
+                                 line=dict(width=3, color=UP if basket.iloc[-1] >= 0 else DOWN),
+                                 hovertemplate="%{y:+.2f}%"))
+        fig.add_hline(y=0, line=dict(color="#8A92A6", width=1, dash="dot"))
+        fig.update_layout(title="Short P&L since the open (% of entry, + = profit)",
+                          xaxis_title="Time (IST)", yaxis_title="P&L (%)", yaxis_ticksuffix="%")
+        chart(fig, wide.assign(Basket=basket).reset_index(names="time"), f"live_path_{session}", height=380)
+    with right_col:
+        risk = df[df["Status"] == "OPEN"].sort_values("To stop %", ascending=False)
+        fig = go.Figure(go.Bar(
+            x=risk["To stop %"], y=risk["Symbol"], orientation="h",
+            marker_color=[risk_colour(v) for v in risk["To stop %"]],
+            text=[f"{v:.1f}%" for v in risk["To stop %"]], textposition="outside",
+            customdata=risk[["Last ₹", "BUY SL-M ₹"]].to_numpy(),
+            hovertemplate="%{y}: %{x:.2f}% to stop<br>last ₹%{customdata[0]:,.2f} → "
+                          "stop ₹%{customdata[1]:,.2f}<extra></extra>"))
+        fig.add_vline(x=1, line=dict(color=DOWN, width=1, dash="dot"))
+        fig.update_layout(title="Distance to stop (open positions)", xaxis_title="Rise needed to hit stop (%)",
+                          yaxis_title="", hovermode="closest", showlegend=False)
+        chart(fig, risk[["Symbol", "Last ₹", "BUY SL-M ₹", "To stop %"]], f"live_risk_{session}", height=380)
+    pick_name = st.selectbox("🔍 Chart one position (1-minute candles)", list(levels),
+                             key="live_drill", index=0)
+    sym, entry, stop, upper = levels[pick_name]
+    b = bars[sym]
+    fig = go.Figure(go.Candlestick(x=b.index, open=b["open"], high=b["high"], low=b["low"], close=b["close"],
+                                   name=pick_name, increasing_line_color=UP, decreasing_line_color=DOWN))
+    for y, text, colour, dash in ((entry, "entry", "#4EA8FF", "solid"), (stop, "stop", DOWN, "dash"),
+                                  (upper, "upper circuit", "#FFB547", "dot")):
+        if y:
+            fig.add_hline(y=y, line=dict(color=colour, width=1.5, dash=dash),
+                          annotation_text=f"{text} ₹{y:,.2f}", annotation_position="top left",
+                          annotation_font_color=colour)
+    fig.update_layout(title=f"{pick_name} — short from ₹{entry:,.2f}, stop ₹{stop:,.2f}",
+                      xaxis_title="Time (IST)", yaxis_title="Price (₹)", yaxis_tickprefix="₹",
+                      xaxis_rangeslider_visible=False, showlegend=False)
+    chart(fig, b.reset_index(names="time"), f"live_candles_{session}_{pick_name}", height=360)
     st.caption("Prices: Yahoo Finance 1-minute bars (can lag NSE by 1–2 minutes). Stops use the "
                "official open unless your fill differs — your broker's order book is the truth.")
 

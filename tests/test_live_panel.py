@@ -49,3 +49,15 @@ def test_circuit_capped_stop():
     assert G.circuit_capped_stop(_pick("LALITHAA", 387.85, 400.00), table) is None
     assert G.circuit_capped_stop(_pick("MIDCO", 387.85, 407.70), table) is None
     assert G.circuit_capped_stop(_pick("BIG", 387.85, 999.0), table) is None
+
+
+def test_countdown_and_risk_colour():
+    from datetime import datetime
+
+    from nse_intraday_ai import gap_reversal_ui as U
+    ist = U.IST
+    assert U.countdown(datetime(2026, 10, 5, 10, 20, 30, tzinfo=ist)) == ("Time to 15:15 cover", "4h 54m")
+    assert U.countdown(datetime(2026, 10, 5, 15, 16, tzinfo=ist))[1] == "COVER NOW"
+    assert U.countdown(datetime(2026, 10, 5, 15, 45, tzinfo=ist))[1] == "Closed"
+    assert U.risk_colour(0.5) == U.DOWN and U.risk_colour(2.0) == "#FFB547" and U.risk_colour(5.0) == U.UP
+    assert U.risk_colour(None) == U.risk_colour(float("nan")) == "#8A92A6"
