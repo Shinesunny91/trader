@@ -36,24 +36,14 @@ def _frame(rows: list[dict]) -> pd.DataFrame:
     return df.rename(columns=COLS) if not df.empty else df
 
 
-@st.fragment(run_every=60)
+@st.fragment(run_every=15)
 def _live() -> None:
     live = M.read_live()
     now = datetime.now(IST)
     if not live:
-        st.info("No scan yet. The `nse-intraday-scan` timer runs every 5 minutes from 09:20 to 15:45 on "
+        st.info("No scan yet. The `nse-intraday-scan` timer runs every minute from 09:20 to 15:45 on "
                 "trading days (`python scripts/intraday_monitor.py scan`).")
         return
-    hdr_left, hdr_right = st.columns([4, 1])
-    with hdr_right:
-        if st.button("⚡ Scan Now", help="Run scan immediately on live 5m bars", use_container_width=True):
-            with st.spinner("Scanning NSE 500 now..."):
-                import subprocess, sys
-                from pathlib import Path
-                root = Path(__file__).resolve().parents[2]
-                subprocess.run([sys.executable, str(root / "scripts" / "intraday_monitor.py"), "scan"], check=False)
-                st.rerun()
-
     stale = live.get("session") != now.date().isoformat()
     b = live.get("breadth") or {}
     c = st.columns(5)
