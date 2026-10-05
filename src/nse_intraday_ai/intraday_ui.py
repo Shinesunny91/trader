@@ -61,10 +61,11 @@ def _live() -> None:
         st.subheader("🛡 Gap-book stop watch")
         df = pd.DataFrame(gb)
         for r in df.itertuples():
+            to_stop = getattr(r, "to_stop_pct", None)
             if r.stop_hit:
                 st.error(f"**{r.symbol}** reached its stop ₹{r.stop:,.2f} — confirm your SL order filled.")
-            elif 0 <= r.to_stop_pct <= M.NEAR_STOP_PCT:
-                st.warning(f"**{r.symbol}** is {r.to_stop_pct:.1f}% from its stop ₹{r.stop:,.2f}. Keep the stop.")
+            elif to_stop is not None and not pd.isna(to_stop) and 0 <= to_stop <= M.NEAR_STOP_PCT:
+                st.warning(f"**{r.symbol}** is {to_stop:.1f}% from its stop ₹{r.stop:,.2f}. Keep the stop.")
         table(df.rename(columns={"symbol": "Symbol", "entry": "Entry ₹", "stop": "Stop ₹", "last": "Last ₹",
                                  "stop_hit": "Stop hit", "stop_capped": "Capped under circuit",
                                  "to_stop_pct": "To stop %", "pnl_pct": "Short P&L %"}),

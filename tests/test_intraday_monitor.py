@@ -135,3 +135,18 @@ def test_build_live_is_json_clean():
                        datetime(2026, 10, 5, 11, 0, tzinfo=M.IST))
     json.dumps(out, allow_nan=False)
     assert out["last_bar"] == "10:50"
+
+
+def test_gap_alerts_handles_none_to_stop():
+    rows = [{"symbol": "S0", "stop_hit": False, "to_stop_pct": None, "last": None, "stop": 100.0}]
+    # Should not raise TypeError: '<=' not supported between instances of 'int' and 'NoneType'
+    assert M.gap_alerts(rows, set()) == []
+
+
+def test_snapshot_handles_lagging_nan_bars():
+    p, ctx = _panel(nbar=10), _ctx()
+    p.c[0, 9] = np.nan  # bar 9 missing / no trade, but bar 8 had 102.0
+    p.c[0, 8] = 102.0
+    snap = M.snapshot(p, ctx).set_index("symbol")
+    assert "S0" in snap.index
+    assert snap.at["S0", "last"] == 102.0

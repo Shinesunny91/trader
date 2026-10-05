@@ -210,16 +210,17 @@ def snapshot(p: DayPanel, ctx: Context) -> pd.DataFrame:
     if n == 0:
         return pd.DataFrame()
     with _quiet():
-        last = p.c[:, n - 1]
-        o0 = p.o[:, 0]
-        cumv = np.nancumsum(p.v, axis=1)[:, n - 1]
-        rv = cumv / ctx.cum_base[:, n - 1]
+        last = pd.DataFrame(p.c[:, :n]).ffill(axis=1).iloc[:, -1].to_numpy(dtype=float)
+        o0 = pd.DataFrame(p.o[:, :n]).bfill(axis=1).iloc[:, 0].to_numpy(dtype=float)
+        cumv = np.nancumsum(p.v[:, :n], axis=1)[:, -1]
+        base_v = ctx.cum_base[:, n - 1]
+        rv = np.where(base_v > 0, cumv / base_v, np.nan)
         hi_prev = np.nanmax(p.h[:, : n - 1], axis=1) if n > 1 else np.full(len(last), np.nan)
         lo_prev = np.nanmin(p.lo[:, : n - 1], axis=1) if n > 1 else np.full(len(last), np.nan)
         upper = ctx.prev_close * (1 + ctx.band / 100)
         lower = ctx.prev_close * (1 - ctx.band / 100)
-        typical = (p.h + p.lo + p.c) / 3
-        vwap = np.nansum(typical * np.nan_to_num(p.v), axis=1) / np.where(cumv > 0, cumv, np.nan)
+        typical = (p.h[:, :n] + p.lo[:, :n] + p.c[:, :n]) / 3
+        vwap = np.nansum(typical * np.nan_to_num(p.v[:, :n]), axis=1) / np.where(cumv > 0, cumv, np.nan)
     df = pd.DataFrame({
         "symbol": p.symbols, "last": last, "chg_pct": (last / ctx.prev_close - 1) * 100,
         "from_open_pct": (last / o0 - 1) * 100, "gap_pct": (o0 / ctx.prev_close - 1) * 100,
@@ -468,10 +469,12 @@ def gap_book_watch(p: DayPanel, picks_payload: dict | None, band: np.ndarray | N
                 stop, capped = cap[0], True
         with _quiet():
             hit = bool(np.nanmax(p.h[s, : min(p.nbar, SQ_BAR)]) >= stop)
-        last = float(p.c[s, p.nbar - 1])
+        valid = np.where(np.isfinite(p.c[s, : p.nbar]))[0]
+        last = float(p.c[s, valid[-1]]) if valid.size else float("nan")
+        to_stop = round((stop / last - 1) * 100, 2) if math.isfinite(last) and last > 0 else None
+        pnl = round((entry - last) / entry * 100, 2) if math.isfinite(last) and entry > 0 else None
         rows.append({"symbol": sym, "entry": entry, "stop": stop, "last": last, "stop_hit": hit,
-                     "stop_capped": capped, "to_stop_pct": round((stop / last - 1) * 100, 2),
-                     "pnl_pct": round((entry - last) / entry * 100, 2)})
+                     "stop_capped": capped, "to_stop_pct": to_stop, "pnl_pct": pnl})
     return rows
 
 
@@ -479,12 +482,16 @@ def gap_alerts(rows: list[dict], sent: set[str]) -> list[tuple[str, str]]:
     """(key, message) for alerts not yet sent: stop hit, or within NEAR_STOP_PCT of it."""
     out = []
     for r in rows:
+        to_stop = r.get("to_stop_pct")
+        last_px = r.get("last")
+        last_str = f" (last ₹{last_px:,.2f})" if last_px is not None and math.isfinite(last_px) else ""
         if r["stop_hit"] and f"hit:{r['symbol']}" not in sent:
             out.append((f"hit:{r['symbol']}", f"🔴 {r['symbol']} reached its stop ₹{r['stop']:,.2f} — "
                                               "check your SL order filled."))
-        elif not r["stop_hit"] and 0 <= r["to_stop_pct"] <= NEAR_STOP_PCT and f"near:{r['symbol']}" not in sent:
-            out.append((f"near:{r['symbol']}", f"⚠ {r['symbol']} is {r['to_stop_pct']:.1f}% from its stop "
-                                               f"₹{r['stop']:,.2f} (last ₹{r['last']:,.2f}). Keep the stop — don't move it."))
+        elif (not r["stop_hit"] and to_stop is not None and math.isfinite(to_stop)
+              and 0 <= to_stop <= NEAR_STOP_PCT and f"near:{r['symbol']}" not in sent):
+            out.append((f"near:{r['symbol']}", f"⚠ {r['symbol']} is {to_stop:.1f}% from its stop "
+                                               f"₹{r['stop']:,.2f}{last_str}. Keep the stop — don't move it."))
     return out
 
 
